@@ -10,6 +10,7 @@
 //  编译:  cargo run --release
 // =====================================================================
 
+mod fetch;
 mod game_spec;
 mod realdata;
 
