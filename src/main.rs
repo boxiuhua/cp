@@ -495,6 +495,11 @@ fn main() {
             fetch::run_import(&cli_args[2..]);
             return;
         }
+        Some("serve") => {
+            let port: u16 = cli_args.get(2).and_then(|s| s.parse().ok()).unwrap_or(8080);
+            server::serve(port);
+            return;
+        }
         Some("help") | Some("--help") => {
             fetch::print_usage();
             return;

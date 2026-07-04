@@ -282,6 +282,71 @@ fn import_response(game: &str, body: &str) -> Response {
     }
 }
 
+fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() { return None; }
+    (0..=hay.len() - needle.len()).find(|&i| &hay[i..i + needle.len()] == needle)
+}
+
+fn parse_content_length(head: &str) -> usize {
+    for line in head.lines() {
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                return v.trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    0
+}
+
+fn handle_conn(mut stream: std::net::TcpStream) -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    let mut buf: Vec<u8> = Vec::new();
+    let mut tmp = [0u8; 8192];
+    let mut headers_end = None;
+    loop {
+        let n = stream.read(&mut tmp)?;
+        if n == 0 { break; }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") { headers_end = Some(pos); break; }
+        if buf.len() > 2_000_000 { break; }
+    }
+    let headers_end = match headers_end {
+        Some(p) => p,
+        None => { let _ = stream.write_all(&Response::json(400, "{\"error\":\"bad request\"}".to_string()).to_bytes()); return Ok(()); }
+    };
+    let head = String::from_utf8_lossy(&buf[..headers_end]).to_string();
+    let want = parse_content_length(&head);
+    let body_start = headers_end + 4;
+    while buf.len() < body_start + want {
+        let n = stream.read(&mut tmp)?;
+        if n == 0 { break; }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > 2_000_000 { break; }
+    }
+    let end = (body_start + want).min(buf.len());
+    let body = String::from_utf8_lossy(&buf[body_start..end]).to_string();
+    let resp = match parse_request(&head, &body) {
+        Some(req) => handle(&req.method, &req.path, &req.query, &req.body),
+        None => Response::json(400, "{\"error\":\"bad request\"}".to_string()),
+    };
+    stream.write_all(&resp.to_bytes())?;
+    Ok(())
+}
+
+pub(crate) fn serve(port: u16) {
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = match std::net::TcpListener::bind(&addr) {
+        Ok(l) => l,
+        Err(e) => { eprintln!("无法监听 {}:{}(端口可能被占用)", addr, e); return; }
+    };
+    println!("服务已启动:http://{}  (Ctrl+C 停止)", addr);
+    for stream in listener.incoming() {
+        if let Ok(s) = stream {
+            std::thread::spawn(move || { let _ = handle_conn(s); });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +461,17 @@ mod tests {
         assert!(r.body.contains("id=\"game\"")); // 彩种下拉
         assert!(r.body.contains("/api/analysis")); // 前端会请求分析
         assert!(r.body.contains("方法与策略说明"));
+    }
+
+    #[test]
+    fn find_subslice_works() {
+        assert_eq!(find_subslice(b"abcXYdef", b"XY"), Some(3));
+        assert_eq!(find_subslice(b"abc", b"ZZ"), None);
+    }
+
+    #[test]
+    fn parse_content_length_reads_header() {
+        assert_eq!(parse_content_length("POST / HTTP/1.1\r\nContent-Length: 42\r\nHost: x"), 42);
+        assert_eq!(parse_content_length("GET / HTTP/1.1\r\nHost: x"), 0);
     }
 }
