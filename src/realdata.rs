@@ -92,6 +92,70 @@ pub(crate) fn load_game(spec: &GameSpec) -> Result<(Vec<DrawRecord>, Vec<SkipInf
     Ok(parse_lines(spec, &content))
 }
 
+// 某 Pool 组件各号出现次数,下标 1..=size。
+pub(crate) fn pool_counts(draws: &[DrawRecord], comp_idx: usize, size: u32) -> Vec<u64> {
+    let mut c = vec![0u64; size as usize + 1];
+    for d in draws {
+        for &b in &d.components[comp_idx] {
+            c[b as usize] += 1;
+        }
+    }
+    c
+}
+
+// 某 Digits 组件第 pos 位各数字出现次数,下标 0..base。
+pub(crate) fn digit_counts(draws: &[DrawRecord], comp_idx: usize, pos: usize, base: u32) -> Vec<u64> {
+    let mut c = vec![0u64; base as usize];
+    for d in draws {
+        c[d.components[comp_idx][pos] as usize] += 1;
+    }
+    c
+}
+
+// [真实] 均匀性:Pool 按号池、Digits 逐位分别做卡方。
+pub(crate) fn analyze_uniformity(spec: &GameSpec, draws: &[DrawRecord]) {
+    println!("\n-- [真实] 卡方均匀性检验 --");
+    for (ci, comp) in spec.components.iter().enumerate() {
+        match comp {
+            Component::Pool { label, size, pick } => {
+                let counts = pool_counts(draws, ci, *size);
+                let expected = draws.len() as f64 * *pick as f64 / *size as f64;
+                let chi2 = crate::chi2_from_freq(&counts[1..=*size as usize], expected);
+                let df = (*size - 1) as f64;
+                let p = crate::chi2_pvalue(chi2, df);
+                let sd = expected.sqrt();
+                let mut idx: Vec<usize> = (1..=*size as usize).collect();
+                idx.sort_by_key(|&i| counts[i]);
+                let (cold, hot) = (idx[0], idx[*size as usize - 1]);
+                println!(
+                    "[{} {}/{}] 期望频次 {:.1}  χ²={:.2} df={} p={:.4}  =>{}",
+                    label, pick, size, expected, chi2, df as u32, p,
+                    if p > 0.05 { "均匀" } else { "本样本偏离(小样本功效低)" }
+                );
+                println!(
+                    "  最冷 {:02}({}次) vs 最热 {:02}({}次),差 ≈{:.1}σ,属随机涨落。",
+                    cold, counts[cold], hot, counts[hot],
+                    (counts[hot] - counts[cold]) as f64 / sd.max(1e-9)
+                );
+            }
+            Component::Digits { label, bases } => {
+                for (pos, &base) in bases.iter().enumerate() {
+                    let counts = digit_counts(draws, ci, pos, base);
+                    let expected = draws.len() as f64 / base as f64;
+                    let chi2 = crate::chi2_from_freq(&counts, expected);
+                    let df = (base - 1) as f64;
+                    let p = crate::chi2_pvalue(chi2, df);
+                    println!(
+                        "[{} 第{}位 0-{}] 期望频次 {:.1}  χ²={:.2} df={} p={:.4}  =>{}",
+                        label, pos + 1, base - 1, expected, chi2, df as u32, p,
+                        if p > 0.05 { "均匀" } else { "本样本偏离(小样本功效低)" }
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +216,27 @@ mod tests {
         let (draws, skips) = parse_lines(&ssq(), content);
         assert_eq!(draws.len(), 2);
         assert_eq!(skips.len(), 1);
+    }
+
+    #[test]
+    fn pool_counts_tally() {
+        let draws = vec![rec(vec![vec![1, 2, 3, 4, 5, 6], vec![9]]),
+                         rec(vec![vec![1, 2, 3, 4, 5, 7], vec![3]])];
+        let c = pool_counts(&draws, 0, 33);
+        assert_eq!(c[1], 2);
+        assert_eq!(c[6], 1);
+        assert_eq!(c[7], 1);
+        assert_eq!(c[8], 0);
+    }
+
+    #[test]
+    fn digit_counts_tally() {
+        let draws = vec![rec(vec![vec![7, 7, 2]]), rec(vec![vec![7, 0, 2]])];
+        let pos0 = digit_counts(&draws, 0, 0, 10);
+        assert_eq!(pos0[7], 2);
+        assert_eq!(pos0[0], 0);
+        let pos1 = digit_counts(&draws, 0, 1, 10);
+        assert_eq!(pos1[7], 1);
+        assert_eq!(pos1[0], 1);
     }
 }
