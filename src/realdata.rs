@@ -138,6 +138,7 @@ pub(crate) struct GameAnalysis {
     pub runs: Vec<RunsRow>,
     pub pred_n: usize,
     pub pred: Vec<CompPred>,
+    pub picks: Vec<StrategyPick>,
 }
 
 pub(crate) fn compute_uniformity(spec: &GameSpec, draws: &[DrawRecord]) -> Vec<UniformRow> {
@@ -275,14 +276,61 @@ pub(crate) fn compute_coverage(draws: &[DrawRecord]) -> Coverage {
     }
 }
 
+pub(crate) struct StrategyPick {
+    pub strategy: String,
+    pub why: String,
+    pub ticket: Vec<Vec<u32>>, // 每组件一段号码
+}
+
+// 按冷/热/机选三策略各生成一注号码(仅演示,概率并不更优)。
+pub(crate) fn strategy_picks(spec: &GameSpec, draws: &[DrawRecord], rng: &mut crate::Rng) -> Vec<StrategyPick> {
+    // (名称, 为什么, 模式) 模式:0=冷 1=热 2=机选
+    let modes: [(&str, &str, u8); 3] = [
+        ("冷号", "赌'冷号该回补了'——但历史遗漏不改变下期概率,无效。", 0),
+        ("热号", "赌'热号继续走强'——但开奖独立同分布,无效。", 1),
+        ("机选", "完全不依赖历史,随机一注。", 2),
+    ];
+    let mut out = Vec::with_capacity(3);
+    for (name, why, mode) in modes {
+        let mut ticket: Vec<Vec<u32>> = Vec::with_capacity(spec.components.len());
+        for (ci, comp) in spec.components.iter().enumerate() {
+            match comp {
+                Component::Pool { size, pick, .. } => {
+                    let seg = match mode {
+                        0 => { let wc = pool_counts(draws, ci, *size); pick_pool(&wc, *size, *pick, false) }
+                        1 => { let wc = pool_counts(draws, ci, *size); pick_pool(&wc, *size, *pick, true) }
+                        _ => rng.sample(*size, *pick),
+                    };
+                    ticket.push(seg);
+                }
+                Component::Digits { bases, .. } => {
+                    let mut seg = Vec::with_capacity(bases.len());
+                    for (pos, &base) in bases.iter().enumerate() {
+                        let d = match mode {
+                            0 => { let wc = digit_counts(draws, ci, pos, base); pick_digit(&wc, false) }
+                            1 => { let wc = digit_counts(draws, ci, pos, base); pick_digit(&wc, true) }
+                            _ => rng.below(base as u64) as u32,
+                        };
+                        seg.push(d);
+                    }
+                    ticket.push(seg);
+                }
+            }
+        }
+        out.push(StrategyPick { strategy: name.to_string(), why: why.to_string(), ticket });
+    }
+    out
+}
+
 pub(crate) fn analyze_game(spec: &GameSpec, draws: &[DrawRecord], rng: &mut crate::Rng) -> GameAnalysis {
     let (pred_n, pred) = prediction_stats(spec, draws, 30, rng);
+    let picks = strategy_picks(spec, draws, rng);
     GameAnalysis {
         coverage: compute_coverage(draws),
         uniformity: compute_uniformity(spec, draws),
         gambler: compute_gamblers(spec, draws),
         runs: compute_runs(spec, draws),
-        pred_n, pred,
+        pred_n, pred, picks,
     }
 }
 
@@ -565,6 +613,27 @@ mod tests {
         let (draws, skips) = parse_lines(&ssq(), content);
         assert_eq!(draws.len(), 2);
         assert_eq!(skips.len(), 1);
+    }
+
+    #[test]
+    fn strategy_picks_hot_cold_random() {
+        let ssq = real_data_games().into_iter().find(|g| g.key == "ssq").unwrap();
+        let rows: Vec<DrawRecord> = (0..10).map(|_| rec(vec![vec![1,2,3,4,5,6], vec![1]])).collect();
+        let mut rng = crate::Rng::new(1);
+        let picks = strategy_picks(&ssq, &rows, &mut rng);
+        assert_eq!(picks.len(), 3);
+        assert_eq!(picks[0].strategy, "冷号");
+        assert_eq!(picks[1].strategy, "热号");
+        assert_eq!(picks[2].strategy, "机选");
+        // 每注含 2 组件(红+蓝)
+        assert_eq!(picks[0].ticket.len(), 2);
+        // 热号红段=最热的 6 个 = [1,2,3,4,5,6];冷号红段=最冷的 6 个(计数0,按号升序)= [7..12]
+        assert_eq!(picks[1].ticket[0], vec![1,2,3,4,5,6]);
+        assert_eq!(picks[0].ticket[0], vec![7,8,9,10,11,12]);
+        // 机选红段:6 个互异、均 ∈ [1,33]
+        let r = &picks[2].ticket[0];
+        assert_eq!(r.len(), 6);
+        assert!(r.iter().all(|&n| (1..=33).contains(&n)));
     }
 
     #[test]
