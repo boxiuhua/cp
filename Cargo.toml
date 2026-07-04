@@ -1,0 +1,14 @@
+[package]
+name = "lottery_stats"
+version = "0.1.0"
+edition = "2021"
+
+# 无任何外部依赖:PRNG、卡方分布、误差函数全部自行实现,离线可编译运行。
+[dependencies]
+
+[[bin]]
+name = "lottery_stats"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
