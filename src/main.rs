@@ -490,6 +490,10 @@ fn main() {
             fetch::run_fetch(&cli_args[2..]);
             return;
         }
+        Some("import") => {
+            fetch::run_import(&cli_args[2..]);
+            return;
+        }
         Some("help") | Some("--help") => {
             fetch::print_usage();
             return;

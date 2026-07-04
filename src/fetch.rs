@@ -146,6 +146,7 @@ pub(crate) fn print_usage() {
     println!("用法:");
     println!("  lottery_stats                    运行完整分析报告(读 data/*.csv)");
     println!("  lottery_stats fetch <彩种> [期数]   抓取并写入 data/<彩种>.csv(默认 100 期)");
+    println!("  lottery_stats import <彩种> <文件>  从接口 JSON 文件导入并写入 data/<彩种>.csv");
     println!("  lottery_stats help               显示本说明");
     println!("支持抓取的彩种:ssq(双色球) d3(福彩3D) kl8(快乐8) qlc(7乐彩)");
 }
@@ -194,6 +195,30 @@ pub(crate) fn do_fetch(args: &[String]) -> Result<String, String> {
         .ok_or_else(|| format!("{} 暂不支持抓取(仅福彩 ssq/3d/kl8/qlc 支持)", spec.name))?;
     let url = build_url(src.name_param, count);
     let body = curl_get(&url)?;
+    process_and_write(&spec, &body)
+}
+
+pub(crate) fn run_import(args: &[String]) {
+    match do_import(args) {
+        Ok(msg) => println!("{}", msg),
+        Err(e) => eprintln!("导入失败:{}", e),
+    }
+}
+
+pub(crate) fn do_import(args: &[String]) -> Result<String, String> {
+    let key = args.get(0).ok_or_else(|| "缺少彩种参数,用法见 `help`。".to_string())?;
+    let path = args
+        .get(1)
+        .ok_or_else(|| "缺少文件路径,用法:import <彩种> <文件>".to_string())?;
+    let spec = real_data_games()
+        .into_iter()
+        .find(|g| &g.key == key)
+        .ok_or_else(|| format!("未知彩种 '{}'。支持:ssq/d3/kl8/qlc", key))?;
+    spec.fetch
+        .as_ref()
+        .ok_or_else(|| format!("{} 非福彩 JSON 格式,import 仅支持 ssq/d3/kl8/qlc", spec.name))?;
+    let body = std::fs::read_to_string(path)
+        .map_err(|e| format!("无法读取文件 '{}':{}", path, e))?;
     process_and_write(&spec, &body)
 }
 
@@ -330,5 +355,28 @@ mod tests {
         // state 成功但记录号码不足 => 0 条有效 => Err
         let json = r#"{"state":0,"result":[{"code":"1","date":"2024-01-01","red":"01,02","blue":""}]}"#;
         assert!(build_csv(&ssq, json).is_err());
+    }
+
+    #[test]
+    fn do_import_unknown_key_errs() {
+        assert!(do_import(&["xyz".to_string(), "f.json".to_string()]).is_err());
+    }
+
+    #[test]
+    fn do_import_unsupported_game_errs() {
+        // dlt 无 fetch 源 => 在读文件前报错
+        assert!(do_import(&["dlt".to_string(), "f.json".to_string()]).is_err());
+    }
+
+    #[test]
+    fn do_import_missing_args_errs() {
+        // 只给 key,缺文件路径
+        assert!(do_import(&["ssq".to_string()]).is_err());
+    }
+
+    #[test]
+    fn do_import_missing_file_errs() {
+        // ssq 合法且有源,但文件不存在 => 读文件失败,且不会写 data/ssq.csv
+        assert!(do_import(&["ssq".to_string(), "C:/no/such/dir/nope-xyz-123.json".to_string()]).is_err());
     }
 }
