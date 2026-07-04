@@ -18,11 +18,17 @@ impl Component {
     }
 }
 
+// 该彩种的抓取源(福彩接口的 name 参数)。None 表示暂不支持抓取。
+pub(crate) struct FetchSource {
+    pub name_param: &'static str,
+}
+
 pub(crate) struct GameSpec {
     pub key: &'static str,
     pub name: &'static str,
     pub file: &'static str,
     pub components: Vec<Component>,
+    pub fetch: Option<FetchSource>,
 }
 
 impl GameSpec {
@@ -40,6 +46,7 @@ pub(crate) fn real_data_games() -> Vec<GameSpec> {
                 Component::Pool { label: "红球", size: 33, pick: 6 },
                 Component::Pool { label: "蓝球", size: 16, pick: 1 },
             ],
+            fetch: Some(FetchSource { name_param: "ssq" }),
         },
         GameSpec {
             key: "dlt", name: "超级大乐透", file: "data/dlt.csv",
@@ -47,30 +54,37 @@ pub(crate) fn real_data_games() -> Vec<GameSpec> {
                 Component::Pool { label: "前区", size: 35, pick: 5 },
                 Component::Pool { label: "后区", size: 12, pick: 2 },
             ],
+            fetch: None,
         },
         GameSpec {
             key: "d3", name: "福彩3D", file: "data/d3.csv",
             components: vec![Component::Digits { label: "直选", bases: vec![10, 10, 10] }],
+            fetch: Some(FetchSource { name_param: "3d" }),
         },
         GameSpec {
             key: "pl3", name: "排列3", file: "data/pl3.csv",
             components: vec![Component::Digits { label: "直选", bases: vec![10, 10, 10] }],
+            fetch: None,
         },
         GameSpec {
             key: "pl5", name: "排列5", file: "data/pl5.csv",
             components: vec![Component::Digits { label: "直选", bases: vec![10, 10, 10, 10, 10] }],
+            fetch: None,
         },
         GameSpec {
             key: "qxc", name: "7星彩", file: "data/qxc.csv",
             components: vec![Component::Digits { label: "直选", bases: vec![10, 10, 10, 10, 10, 10, 15] }],
+            fetch: None,
         },
         GameSpec {
             key: "qlc", name: "7乐彩", file: "data/qlc.csv",
             components: vec![Component::Pool { label: "号码", size: 30, pick: 7 }],
+            fetch: Some(FetchSource { name_param: "qlc" }),
         },
         GameSpec {
             key: "kl8", name: "快乐8", file: "data/kl8.csv",
             components: vec![Component::Pool { label: "号码", size: 80, pick: 20 }],
+            fetch: Some(FetchSource { name_param: "kl8" }),
         },
     ]
 }
@@ -94,5 +108,21 @@ mod tests {
     #[test]
     fn all_eight_games_present() {
         assert_eq!(real_data_games().len(), 8);
+    }
+
+    #[test]
+    fn fetch_sources_configured() {
+        let g = real_data_games();
+        let src = |k: &str| {
+            g.iter().find(|x| x.key == k).unwrap().fetch.as_ref().map(|s| s.name_param)
+        };
+        assert_eq!(src("ssq"), Some("ssq"));
+        assert_eq!(src("d3"), Some("3d"));
+        assert_eq!(src("kl8"), Some("kl8"));
+        assert_eq!(src("qlc"), Some("qlc"));
+        assert_eq!(src("dlt"), None);
+        assert_eq!(src("pl3"), None);
+        assert_eq!(src("pl5"), None);
+        assert_eq!(src("qxc"), None);
     }
 }
