@@ -173,7 +173,7 @@ details{margin:6px 0}summary{cursor:pointer;color:var(--accent)}
 <div><button id="sync">同步</button> <span id="syncmsg" class=muted></span></div></div>
 
 <div class=card id="picks"><h2>策略选号(仅演示)</h2>
-<p class=warn>⚠ 这三注号码的中奖概率与任意号码完全相同(约 1/1772万)。本演示只为展示"策略"长什么样,并不能提高中奖机会。</p>
+<p class=warn>⚠ 这三注号码的中奖概率与任意其他号码完全相同(头奖概率极低,由组合数唯一决定,与选号方式无关)。本演示只为展示"策略"长什么样,并不能提高中奖机会。</p>
 <div id="picksbody" class=muted>加载中…</div>
 <p class=muted>下方「预测打脸实验」显示冷/热/随机三策略历史平均命中数都≈理论值——它们并不比机选更优。</p></div>
 
@@ -489,7 +489,7 @@ mod tests {
         let r = handle("GET", "/", "", "");
         assert_eq!(r.status, 200);
         assert!(r.body.contains("策略选号(仅演示)"));
-        assert!(r.body.contains("中奖概率与任意号码"));
+        assert!(r.body.contains("中奖概率与任意其他号码"));
         assert!(r.body.contains("id=\"picksbody\""));
     }
 

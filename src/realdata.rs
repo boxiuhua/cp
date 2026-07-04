@@ -296,11 +296,12 @@ pub(crate) fn strategy_picks(spec: &GameSpec, draws: &[DrawRecord], rng: &mut cr
         for (ci, comp) in spec.components.iter().enumerate() {
             match comp {
                 Component::Pool { size, pick, .. } => {
-                    let seg = match mode {
+                    let mut seg = match mode {
                         0 => { let wc = pool_counts(draws, ci, *size); pick_pool(&wc, *size, *pick, false) }
                         1 => { let wc = pool_counts(draws, ci, *size); pick_pool(&wc, *size, *pick, true) }
                         _ => rng.sample(*size, *pick),
                     };
+                    seg.sort_unstable();
                     ticket.push(seg);
                 }
                 Component::Digits { bases, .. } => {
