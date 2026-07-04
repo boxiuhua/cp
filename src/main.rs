@@ -484,6 +484,24 @@ fn monte_carlo_bankroll(rng: &mut Rng) {
 }
 
 fn main() {
+    let cli_args: Vec<String> = std::env::args().collect();
+    match cli_args.get(1).map(String::as_str) {
+        Some("fetch") => {
+            fetch::run_fetch(&cli_args[2..]);
+            return;
+        }
+        Some("help") | Some("--help") => {
+            fetch::print_usage();
+            return;
+        }
+        Some(other) => {
+            eprintln!("未知命令:{}", other);
+            fetch::print_usage();
+            return;
+        }
+        None => {}
+    }
+
     println!("╔════════════════════════════════════════════════════════╗");
     println!("║   彩票随机性验证 · 概率论实证工具 (Rust / 零依赖)        ║");
     println!("║   用数学证明:彩票不可预测,不存在可盈利策略。            ║");

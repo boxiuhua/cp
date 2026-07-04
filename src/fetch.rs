@@ -105,6 +105,90 @@ pub(crate) fn map_entry(spec: &GameSpec, e: &Entry) -> Result<Vec<String>, Strin
     Ok(fields)
 }
 
+pub(crate) fn print_usage() {
+    println!("用法:");
+    println!("  lottery_stats                    运行完整分析报告(读 data/*.csv)");
+    println!("  lottery_stats fetch <彩种> [期数]   抓取并写入 data/<彩种>.csv(默认 100 期)");
+    println!("  lottery_stats help               显示本说明");
+    println!("支持抓取的彩种:ssq(双色球) 3d(福彩3D) kl8(快乐8) qlc(7乐彩)");
+}
+
+// 调用系统 curl 抓取 URL 内容。
+fn curl_get(url: &str) -> Result<String, String> {
+    let out = std::process::Command::new("curl")
+        .args([
+            "-s", "--max-time", "20",
+            "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "-H", "Referer: https://www.cwl.gov.cn/",
+            url,
+        ])
+        .output()
+        .map_err(|e| format!("无法执行 curl(请确认系统已安装 curl):{}", e))?;
+    if !out.status.success() {
+        return Err(format!("curl 退出码非 0:{}", String::from_utf8_lossy(&out.stderr)));
+    }
+    let body = String::from_utf8_lossy(&out.stdout).to_string();
+    if body.trim().is_empty() {
+        return Err("curl 返回空响应(可能被限流或网络不通)".to_string());
+    }
+    Ok(body)
+}
+
+pub(crate) fn run_fetch(args: &[String]) {
+    match do_fetch(args) {
+        Ok(msg) => println!("{}", msg),
+        Err(e) => eprintln!("抓取失败:{}", e),
+    }
+}
+
+pub(crate) fn do_fetch(args: &[String]) -> Result<String, String> {
+    let key = args.get(0).ok_or_else(|| "缺少彩种参数,用法见 `help`。".to_string())?;
+    let count: u32 = match args.get(1) {
+        Some(s) => s.parse().map_err(|_| format!("期数 '{}' 非法(应为正整数)", s))?,
+        None => 100,
+    };
+    let spec = real_data_games()
+        .into_iter()
+        .find(|g| &g.key == key)
+        .ok_or_else(|| format!("未知彩种 '{}'。支持:ssq/3d/kl8/qlc/dlt/pl3/pl5/qxc", key))?;
+    let src = spec
+        .fetch
+        .as_ref()
+        .ok_or_else(|| format!("{} 暂不支持抓取(仅福彩 ssq/3d/kl8/qlc 支持)", spec.name))?;
+    let url = build_url(src.name_param, count);
+    let body = curl_get(&url)?;
+    let entries = parse_result_entries(&body)?;
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut dropped = 0usize;
+    for e in &entries {
+        match map_entry(&spec, e) {
+            Ok(f) => rows.push(f),
+            Err(_) => dropped += 1,
+        }
+    }
+    if rows.is_empty() {
+        return Err(format!("解析到 0 条有效记录(共 {} 条,均校验失败),未写入。", entries.len()));
+    }
+    // 按期号升序(转成时间序,便于游程/预测分析)
+    rows.sort_by(|a, b| {
+        a[0].parse::<u64>().unwrap_or(0).cmp(&b[0].parse::<u64>().unwrap_or(0)).then(a[0].cmp(&b[0]))
+    });
+    let mut out = String::new();
+    out.push_str(&format!(
+        "# {} 抓取于中国福彩网 {} 期  期号,日期,号码...\n",
+        spec.name, rows.len()
+    ));
+    for r in &rows {
+        out.push_str(&r.join(","));
+        out.push('\n');
+    }
+    std::fs::write(spec.file, &out).map_err(|e| format!("写入 {} 失败:{}", spec.file, e))?;
+    Ok(format!(
+        "抓取 {}:解析 {} 期(丢弃 {} 条),写入 {}。期号 {} → {}",
+        spec.key, rows.len(), dropped, spec.file, rows[0][0], rows[rows.len() - 1][0]
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +280,21 @@ mod tests {
     #[test]
     fn map_rejects_insufficient_numbers() {
         assert!(map_entry(&game("ssq"), &entry("1", "01,02,03", "")).is_err());
+    }
+
+    #[test]
+    fn do_fetch_unknown_key_errs() {
+        assert!(do_fetch(&["xyz".to_string()]).is_err());
+    }
+
+    #[test]
+    fn do_fetch_unsupported_game_errs() {
+        // dlt 无 fetch 源,应在触网前报错
+        assert!(do_fetch(&["dlt".to_string()]).is_err());
+    }
+
+    #[test]
+    fn do_fetch_bad_count_errs() {
+        assert!(do_fetch(&["ssq".to_string(), "abc".to_string()]).is_err());
     }
 }
