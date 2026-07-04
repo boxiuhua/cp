@@ -403,8 +403,8 @@ pub(crate) fn run_all_real_data(rng: &mut crate::Rng) {
         match load_game(&spec) {
             Ok((draws, skips)) => {
                 println!(
-                    "\n【{}】{}:解析 {} 期,跳过 {} 行。",
-                    spec.name, spec.file, draws.len(), skips.len()
+                    "\n【{}·{}】{}:解析 {} 期,跳过 {} 行。",
+                    spec.name, spec.key, spec.file, draws.len(), skips.len()
                 );
                 for s in skips.iter().take(5) {
                     println!("  [跳过] 第 {} 行:{}", s.line, s.reason);
@@ -416,7 +416,7 @@ pub(crate) fn run_all_real_data(rng: &mut crate::Rng) {
                 }
             }
             Err(_) => {
-                println!("\n【{}】未找到 {},跳过(填入真实数据即可启用)。", spec.name, spec.file);
+                println!("\n【{}·{}】未找到 {},跳过(填入真实数据即可启用)。", spec.name, spec.key, spec.file);
             }
         }
     }
