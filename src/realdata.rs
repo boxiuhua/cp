@@ -244,6 +244,141 @@ fn describe_target(comp: &Component, target: &TargetKind) -> String {
     }
 }
 
+pub(crate) struct CompPred {
+    pub label: String,
+    pub cold: f64,
+    pub hot: f64,
+    pub random: f64,
+    pub expected: f64,
+}
+
+// 从窗口计数选号:Pool 取 pick 个(热=最多/冷=最少),平局按号升序。
+fn pick_pool(wc: &[u64], size: u32, pick: u32, want_hot: bool) -> Vec<u32> {
+    let mut idx: Vec<u32> = (1..=size).collect();
+    idx.sort_by(|&a, &b| {
+        let ord = wc[a as usize].cmp(&wc[b as usize]);
+        let ord = if want_hot { ord.reverse() } else { ord };
+        ord.then(a.cmp(&b))
+    });
+    idx.into_iter().take(pick as usize).collect()
+}
+
+// 从窗口计数选一个数字:热=最多/冷=最少,平局按数字升序。
+fn pick_digit(wc: &[u64], want_hot: bool) -> u32 {
+    let base = wc.len() as u32;
+    let mut idx: Vec<u32> = (0..base).collect();
+    idx.sort_by(|&a, &b| {
+        let ord = wc[a as usize].cmp(&wc[b as usize]);
+        let ord = if want_hot { ord.reverse() } else { ord };
+        ord.then(a.cmp(&b))
+    });
+    idx[0]
+}
+
+fn overlap(pred: &[u32], actual: &[u32]) -> u64 {
+    pred.iter().filter(|n| actual.contains(n)).count() as u64
+}
+
+// 遍历历史,从第 window 期起用前 window 期走势预测下一期,冷/热/随机三策略,按组件回测。
+pub(crate) fn prediction_stats(
+    spec: &GameSpec,
+    draws: &[DrawRecord],
+    window: usize,
+    rng: &mut crate::Rng,
+) -> (usize, Vec<CompPred>) {
+    if draws.len() <= window {
+        return (0, vec![]);
+    }
+    let ncomp = spec.components.len();
+    let mut sums = vec![[0u64; 3]; ncomp]; // [cold, hot, random]
+    let mut n = 0u64;
+    for i in window..draws.len() {
+        for (ci, comp) in spec.components.iter().enumerate() {
+            match comp {
+                Component::Pool { size, pick, .. } => {
+                    let mut wc = vec![0u64; *size as usize + 1];
+                    for d in &draws[i - window..i] {
+                        for &b in &d.components[ci] {
+                            wc[b as usize] += 1;
+                        }
+                    }
+                    let cold = pick_pool(&wc, *size, *pick, false);
+                    let hot = pick_pool(&wc, *size, *pick, true);
+                    let rnd = rng.sample(*size, *pick);
+                    let actual = &draws[i].components[ci];
+                    sums[ci][0] += overlap(&cold, actual);
+                    sums[ci][1] += overlap(&hot, actual);
+                    sums[ci][2] += overlap(&rnd, actual);
+                }
+                Component::Digits { bases, .. } => {
+                    let actual = &draws[i].components[ci];
+                    for (pos, &base) in bases.iter().enumerate() {
+                        let mut wc = vec![0u64; base as usize];
+                        for d in &draws[i - window..i] {
+                            wc[d.components[ci][pos] as usize] += 1;
+                        }
+                        let cold = pick_digit(&wc, false);
+                        let hot = pick_digit(&wc, true);
+                        let rnd = rng.below(base as u64) as u32;
+                        if cold == actual[pos] { sums[ci][0] += 1; }
+                        if hot == actual[pos] { sums[ci][1] += 1; }
+                        if rnd == actual[pos] { sums[ci][2] += 1; }
+                    }
+                }
+            }
+        }
+        n += 1;
+    }
+    let nf = n as f64;
+    let preds = spec
+        .components
+        .iter()
+        .enumerate()
+        .map(|(ci, comp)| {
+            let expected = match comp {
+                Component::Pool { size, pick, .. } => *pick as f64 * *pick as f64 / *size as f64,
+                Component::Digits { bases, .. } => bases.iter().map(|&b| 1.0 / b as f64).sum(),
+            };
+            let label = match comp {
+                Component::Pool { label, .. } => label.to_string(),
+                Component::Digits { label, .. } => label.to_string(),
+            };
+            CompPred {
+                label,
+                cold: sums[ci][0] as f64 / nf,
+                hot: sums[ci][1] as f64 / nf,
+                random: sums[ci][2] as f64 / nf,
+                expected,
+            }
+        })
+        .collect();
+    (n as usize, preds)
+}
+
+pub(crate) fn print_prediction(n: usize, preds: &[CompPred]) {
+    println!("\n-- [真实] 预测'打脸'实验(冷/热/随机)--");
+    if n == 0 {
+        println!("真实期数不足(需 > 窗口期),跳过。");
+        return;
+    }
+    println!("回测 {} 期,各组件平均命中数:", n);
+    for p in preds {
+        let spread = [p.cold, p.hot, p.random]
+            .iter()
+            .map(|v| (v - p.expected).abs())
+            .fold(0.0f64, f64::max);
+        let verdict = if spread < 0.15 {
+            "三策略贴近理论,无策略优于随机"
+        } else {
+            "样本涨落,长期仍无优势"
+        };
+        println!(
+            "  [{}] 冷 {:.4} / 热 {:.4} / 随机 {:.4}  理论期望 {:.4}  => {}",
+            p.label, p.cold, p.hot, p.random, p.expected, verdict
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +483,29 @@ mod tests {
             TargetKind::DigitAt { pos, digit } => { assert_eq!(pos, 0); assert_eq!(digit, 7); }
             _ => panic!("expected DigitAt"),
         }
+    }
+
+    #[test]
+    fn pool_hot_wins_on_rigged_data() {
+        let ssq = real_data_games().into_iter().find(|g| g.key == "ssq").unwrap();
+        let rows: Vec<DrawRecord> = (0..40).map(|_| rec(vec![vec![1, 2, 3, 4, 5, 6], vec![9]])).collect();
+        let mut rng = crate::Rng::new(1);
+        let (n, preds) = prediction_stats(&ssq, &rows, 30, &mut rng);
+        assert!(n > 0);
+        // 组件 0 = 红球:热策略每期命中 6,冷策略 0
+        assert!((preds[0].hot - 6.0).abs() < 1e-9, "hot={}", preds[0].hot);
+        assert!(preds[0].cold.abs() < 1e-9, "cold={}", preds[0].cold);
+    }
+
+    #[test]
+    fn digit_hot_wins_on_rigged_data() {
+        let d3 = real_data_games().into_iter().find(|g| g.key == "d3").unwrap();
+        let rows: Vec<DrawRecord> = (0..40).map(|_| rec(vec![vec![7, 7, 7]])).collect();
+        let mut rng = crate::Rng::new(2);
+        let (n, preds) = prediction_stats(&d3, &rows, 30, &mut rng);
+        assert!(n > 0);
+        // 3 位都固定为 7:热策略每期命中 3 位,冷策略 0
+        assert!((preds[0].hot - 3.0).abs() < 1e-9, "hot={}", preds[0].hot);
+        assert!(preds[0].cold.abs() < 1e-9, "cold={}", preds[0].cold);
     }
 }
