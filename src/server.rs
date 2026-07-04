@@ -172,6 +172,11 @@ details{margin:6px 0}summary{cursor:pointer;color:var(--accent)}
 <textarea id="json" placeholder="把接口返回的 JSON 粘贴到这里…"></textarea>
 <div><button id="sync">同步</button> <span id="syncmsg" class=muted></span></div></div>
 
+<div class=card id="picks"><h2>策略选号(仅演示)</h2>
+<p class=warn>⚠ 这三注号码的中奖概率与任意号码完全相同(约 1/1772万)。本演示只为展示"策略"长什么样,并不能提高中奖机会。</p>
+<div id="picksbody" class=muted>加载中…</div>
+<p class=muted>下方「预测打脸实验」显示冷/热/随机三策略历史平均命中数都≈理论值——它们并不比机选更优。</p></div>
+
 <div class=card id="analysis"><h2>分析结果</h2><div id="body" class=muted>加载中…</div></div>
 
 <div class=card><h2>方法与策略说明</h2>
@@ -203,8 +208,14 @@ function onChange(){
 async function loadAnalysis(key){
   $("#body").textContent="加载中…";
   const r=await fetch("/api/analysis?game="+encodeURIComponent(key));const a=await r.json();
-  if(!a.available){$("#body").innerHTML=`<span class=warn>${a.reason||"无数据"}</span>`;$("#status").textContent="";return;}
+  if(!a.available){$("#body").innerHTML=`<span class=warn>${a.reason||"无数据"}</span>`;$("#picksbody").innerHTML="<span class=muted>(无数据,无法演示选号)</span>";$("#status").textContent="";return;}
   $("#status").textContent=`${a.coverage.count} 期 ${a.coverage.firstIssue}→${a.coverage.lastIssue}`;
+  let ph="";
+  (a.picks||[]).forEach(p=>{
+    const t=p.ticket.map(seg=>seg.map(n=>String(n).padStart(2,"0")).join(" ")).join(" | ");
+    ph+=`<div class=row><b>${p.strategy}</b> <code>${t}</code><div class=muted>为什么:${p.why}</div></div>`;
+  });
+  $("#picksbody").innerHTML=ph;
   let h="";
   h+="<div class=row><b>卡方均匀性</b></div>";
   a.uniformity.forEach(u=>{h+=`<div class=row><span class=lab>${u.label}</span> χ²=${u.chi2.toFixed(2)} p=${u.p.toFixed(4)} <span class="${u.uniform?'ok':'warn'}">${u.uniform?'均匀':'本样本偏离'}</span>`+(u.cold!==undefined?` <span class=muted>冷${u.cold}(${u.coldN}) 热${u.hot}(${u.hotN})</span>`:"")+"</div>";});
@@ -471,6 +482,15 @@ mod tests {
         let r = handle("POST", "/api/import", "game=ssq", "not-json");
         assert_eq!(r.status, 200);
         assert!(r.body.contains("\"ok\":false"));
+    }
+
+    #[test]
+    fn index_page_has_strategy_section() {
+        let r = handle("GET", "/", "", "");
+        assert_eq!(r.status, 200);
+        assert!(r.body.contains("策略选号(仅演示)"));
+        assert!(r.body.contains("中奖概率与任意号码"));
+        assert!(r.body.contains("id=\"picksbody\""));
     }
 
     #[test]
