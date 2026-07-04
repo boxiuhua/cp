@@ -46,12 +46,22 @@ pub(crate) fn analysis_to_json(a: &GameAnalysis) -> String {
         let nums: Vec<String> = seg.iter().map(|n| n.to_string()).collect();
         format!("[{}]", nums.join(","))
     }).collect();
+    let picks: Vec<String> = a.picks.iter().map(|p| {
+        let tk: Vec<String> = p.ticket.iter().map(|seg| {
+            let ns: Vec<String> = seg.iter().map(|n| n.to_string()).collect();
+            format!("[{}]", ns.join(","))
+        }).collect();
+        format!(
+            "{{\"strategy\":\"{}\",\"why\":\"{}\",\"ticket\":[{}]}}",
+            jesc(&p.strategy), jesc(&p.why), tk.join(",")
+        )
+    }).collect();
     format!(
-        "{{\"available\":true,\"coverage\":{{\"firstIssue\":\"{}\",\"firstDate\":\"{}\",\"lastIssue\":\"{}\",\"lastDate\":\"{}\",\"count\":{},\"latest\":[{}]}},\"uniformity\":[{}],\"gambler\":[{}],\"runs\":[{}],\"predN\":{},\"pred\":[{}]}}",
+        "{{\"available\":true,\"coverage\":{{\"firstIssue\":\"{}\",\"firstDate\":\"{}\",\"lastIssue\":\"{}\",\"lastDate\":\"{}\",\"count\":{},\"latest\":[{}]}},\"uniformity\":[{}],\"gambler\":[{}],\"runs\":[{}],\"predN\":{},\"pred\":[{}],\"picks\":[{}]}}",
         jesc(&a.coverage.first_issue), jesc(&a.coverage.first_date),
         jesc(&a.coverage.last_issue), jesc(&a.coverage.last_date),
         a.coverage.count, latest.join(","),
-        uni.join(","), gam.join(","), run.join(","), a.pred_n, pred.join(","))
+        uni.join(","), gam.join(","), run.join(","), a.pred_n, pred.join(","), picks.join(","))
 }
 
 pub(crate) struct Request {
@@ -376,6 +386,18 @@ mod tests {
         assert!(j.contains("\"runs\":["));
         assert!(j.contains("\"pred\":["));
         assert!(j.contains("\"coverage\":"));
+    }
+
+    #[test]
+    fn analysis_json_has_picks() {
+        let ssq = crate::game_spec::real_data_games().into_iter().find(|g| g.key == "ssq").unwrap();
+        let draws = crate::realdata::load_game(&ssq).unwrap().0;
+        let mut rng = crate::Rng::new(1);
+        let a = crate::realdata::analyze_game(&ssq, &draws, &mut rng);
+        let j = analysis_to_json(&a);
+        assert!(j.contains("\"picks\":["));
+        assert!(j.contains("\"strategy\":\"冷号\""));
+        assert!(j.contains("\"ticket\":["));
     }
 
     #[test]
