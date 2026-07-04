@@ -16,6 +16,18 @@ pub(crate) fn clean_date(s: &str) -> String {
     }
 }
 
+// 安全截取前 max 字节(回退到最近的字符边界),用于错误信息里的响应片段。
+fn head(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 // 读取顶层 "state" 整数值。
 fn read_state(json: &str) -> Option<i64> {
     let i = json.find("\"state\"")?;
@@ -41,8 +53,8 @@ fn field(window: &str, key: &str) -> Option<String> {
 pub(crate) fn parse_result_entries(json: &str) -> Result<Vec<Entry>, String> {
     match read_state(json) {
         Some(0) => {}
-        Some(s) => return Err(format!("接口返回 state={}(非成功):{}", s, &json[..json.len().min(200)])),
-        None => return Err(format!("响应无法识别(缺 state):{}", &json[..json.len().min(200)])),
+        Some(s) => return Err(format!("接口返回 state={}(非成功):{}", s, head(json, 200))),
+        None => return Err(format!("响应无法识别(缺 state):{}", head(json, 200))),
     }
     let code_pat = "\"code\":\"";
     let starts: Vec<usize> = json.match_indices(code_pat).map(|(i, _)| i).collect();
@@ -95,5 +107,17 @@ mod tests {
     #[test]
     fn rejects_empty_result() {
         assert!(parse_result_entries(r#"{"state":0,"result":[]}"#).is_err());
+    }
+
+    #[test]
+    fn error_snippet_is_char_boundary_safe() {
+        // 构造一个 state!=0 且在第 200 字节附近有多字节中文的响应,确保不 panic
+        let mut s = String::from("{\"state\":1,\"message\":\"");
+        while s.len() < 199 {
+            s.push('x');
+        }
+        s.push('限'); // 多字节字符跨越第 200 字节
+        s.push_str("\"}");
+        assert!(parse_result_entries(&s).is_err()); // 应返回 Err,不得 panic
     }
 }
