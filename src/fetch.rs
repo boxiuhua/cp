@@ -105,6 +105,43 @@ pub(crate) fn map_entry(spec: &GameSpec, e: &Entry) -> Result<Vec<String>, Strin
     Ok(fields)
 }
 
+// 接口 JSON body -> (CSV 文本, 报告)。纯函数,不写文件。0 条有效记录返回 Err。
+fn build_csv(spec: &GameSpec, body: &str) -> Result<(String, String), String> {
+    let entries = parse_result_entries(body)?;
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut dropped = 0usize;
+    for e in &entries {
+        match map_entry(spec, e) {
+            Ok(f) => rows.push(f),
+            Err(_) => dropped += 1,
+        }
+    }
+    if rows.is_empty() {
+        return Err(format!("解析到 0 条有效记录(共 {} 条,均校验失败)。", entries.len()));
+    }
+    rows.sort_by(|a, b| {
+        a[0].parse::<u64>().unwrap_or(0).cmp(&b[0].parse::<u64>().unwrap_or(0)).then(a[0].cmp(&b[0]))
+    });
+    let mut csv = String::new();
+    csv.push_str(&format!("# {} {} 期  期号,日期,号码...\n", spec.name, rows.len()));
+    for r in &rows {
+        csv.push_str(&r.join(","));
+        csv.push('\n');
+    }
+    let report = format!(
+        "解析 {} 期(丢弃 {} 条),期号 {} → {}",
+        rows.len(), dropped, rows[0][0], rows[rows.len() - 1][0]
+    );
+    Ok((csv, report))
+}
+
+// build_csv 后写入 spec.file。
+fn process_and_write(spec: &GameSpec, body: &str) -> Result<String, String> {
+    let (csv, report) = build_csv(spec, body)?;
+    std::fs::write(spec.file, &csv).map_err(|e| format!("写入 {} 失败:{}", spec.file, e))?;
+    Ok(format!("{}:{},已写入 {}", spec.name, report, spec.file))
+}
+
 pub(crate) fn print_usage() {
     println!("用法:");
     println!("  lottery_stats                    运行完整分析报告(读 data/*.csv)");
@@ -157,36 +194,7 @@ pub(crate) fn do_fetch(args: &[String]) -> Result<String, String> {
         .ok_or_else(|| format!("{} 暂不支持抓取(仅福彩 ssq/3d/kl8/qlc 支持)", spec.name))?;
     let url = build_url(src.name_param, count);
     let body = curl_get(&url)?;
-    let entries = parse_result_entries(&body)?;
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let mut dropped = 0usize;
-    for e in &entries {
-        match map_entry(&spec, e) {
-            Ok(f) => rows.push(f),
-            Err(_) => dropped += 1,
-        }
-    }
-    if rows.is_empty() {
-        return Err(format!("解析到 0 条有效记录(共 {} 条,均校验失败),未写入。", entries.len()));
-    }
-    // 按期号升序(转成时间序,便于游程/预测分析)
-    rows.sort_by(|a, b| {
-        a[0].parse::<u64>().unwrap_or(0).cmp(&b[0].parse::<u64>().unwrap_or(0)).then(a[0].cmp(&b[0]))
-    });
-    let mut out = String::new();
-    out.push_str(&format!(
-        "# {} 抓取于中国福彩网 {} 期  期号,日期,号码...\n",
-        spec.name, rows.len()
-    ));
-    for r in &rows {
-        out.push_str(&r.join(","));
-        out.push('\n');
-    }
-    std::fs::write(spec.file, &out).map_err(|e| format!("写入 {} 失败:{}", spec.file, e))?;
-    Ok(format!(
-        "抓取 {}:解析 {} 期(丢弃 {} 条),写入 {}。期号 {} → {}",
-        spec.key, rows.len(), dropped, spec.file, rows[0][0], rows[rows.len() - 1][0]
-    ))
+    process_and_write(&spec, &body)
 }
 
 #[cfg(test)]
@@ -296,5 +304,31 @@ mod tests {
     #[test]
     fn do_fetch_bad_count_errs() {
         assert!(do_fetch(&["ssq".to_string(), "abc".to_string()]).is_err());
+    }
+
+    #[test]
+    fn build_csv_sorts_and_formats() {
+        let ssq = real_data_games().into_iter().find(|g| g.key == "ssq").unwrap();
+        let (csv, report) = build_csv(&ssq, SAMPLE).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert!(lines[0].starts_with('#')); // 头注释
+        // 升序:2024001 在 2024002 之前
+        assert_eq!(lines[1], "2024001,2024-01-02,01,07,15,22,28,33,09");
+        assert_eq!(lines[2], "2024002,2024-01-04,03,05,11,19,26,31,02");
+        assert!(report.contains("解析 2 期"));
+    }
+
+    #[test]
+    fn build_csv_rejects_bad_state() {
+        let ssq = real_data_games().into_iter().find(|g| g.key == "ssq").unwrap();
+        assert!(build_csv(&ssq, r#"{"state":1,"message":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn build_csv_rejects_all_invalid() {
+        let ssq = real_data_games().into_iter().find(|g| g.key == "ssq").unwrap();
+        // state 成功但记录号码不足 => 0 条有效 => Err
+        let json = r#"{"state":0,"result":[{"code":"1","date":"2024-01-01","red":"01,02","blue":""}]}"#;
+        assert!(build_csv(&ssq, json).is_err());
     }
 }
