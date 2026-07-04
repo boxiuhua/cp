@@ -136,7 +136,7 @@ fn build_csv(spec: &GameSpec, body: &str) -> Result<(String, String), String> {
 }
 
 // build_csv 后写入 spec.file。
-fn process_and_write(spec: &GameSpec, body: &str) -> Result<String, String> {
+pub(crate) fn process_and_write(spec: &GameSpec, body: &str) -> Result<String, String> {
     let (csv, report) = build_csv(spec, body)?;
     std::fs::write(spec.file, &csv).map_err(|e| format!("写入 {} 失败:{}", spec.file, e))?;
     Ok(format!("{}:{},已写入 {}", spec.name, report, spec.file))

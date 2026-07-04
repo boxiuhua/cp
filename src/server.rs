@@ -131,6 +131,66 @@ impl Response {
     }
 }
 
+// GET / 的页面(Task 5 用真实内容替换此占位)。
+const INDEX_HTML: &str = "<!doctype html><meta charset=utf-8><title>lottery_stats</title><p>页面占位</p>";
+
+pub(crate) fn handle(method: &str, path: &str, query: &str, body: &str) -> Response {
+    match (method, path) {
+        ("GET", "/") => Response::html(INDEX_HTML.to_string()),
+        ("GET", "/api/games") => Response::json(200, games_json()),
+        ("GET", "/api/analysis") => analysis_response(&query_get(query, "game").unwrap_or_default()),
+        ("POST", "/api/import") => import_response(&query_get(query, "game").unwrap_or_default(), body),
+        (_, "/api/games") | (_, "/api/analysis") | (_, "/api/import") | (_, "/") =>
+            Response::json(405, "{\"error\":\"method not allowed\"}".to_string()),
+        _ => Response::json(404, "{\"error\":\"not found\"}".to_string()),
+    }
+}
+
+fn games_json() -> String {
+    let items: Vec<String> = crate::game_spec::real_data_games().iter().map(|g| {
+        let has = crate::realdata::load_game(g).map(|(d, _)| d.len() >= 2).unwrap_or(false);
+        format!(
+            "{{\"key\":\"{}\",\"name\":\"{}\",\"fetchable\":{},\"hasData\":{}}}",
+            jesc(g.key), jesc(g.name), g.fetch.is_some(), has
+        )
+    }).collect();
+    format!("{{\"games\":[{}]}}", items.join(","))
+}
+
+fn analysis_response(game: &str) -> Response {
+    let games = crate::game_spec::real_data_games();
+    let spec = match games.iter().find(|g| g.key == game) {
+        Some(s) => s,
+        None => return Response::json(404, "{\"available\":false,\"reason\":\"未知彩种\"}".to_string()),
+    };
+    match crate::realdata::load_game(spec) {
+        Ok((draws, _)) if draws.len() >= 2 => {
+            let mut rng = crate::Rng::new(20260703);
+            let a = crate::realdata::analyze_game(spec, &draws, &mut rng);
+            Response::json(200, analysis_to_json(&a))
+        }
+        Ok(_) => Response::json(200, "{\"available\":false,\"reason\":\"有效数据不足(<2 期)\"}".to_string()),
+        Err(_) => Response::json(200, format!("{{\"available\":false,\"reason\":\"未找到数据文件 {}\"}}", jesc(spec.file))),
+    }
+}
+
+fn import_response(game: &str, body: &str) -> Response {
+    let spec = match crate::game_spec::real_data_games().into_iter().find(|g| g.key == game) {
+        Some(s) => s,
+        None => return Response::json(400, "{\"ok\":false,\"message\":\"未知彩种\"}".to_string()),
+    };
+    if spec.fetch.is_none() {
+        return Response::json(400, "{\"ok\":false,\"message\":\"该彩种非福彩JSON格式,import仅支持ssq/d3/kl8/qlc\"}".to_string());
+    }
+    if body.len() > 2_000_000 {
+        return Response::json(400, "{\"ok\":false,\"message\":\"数据过大\"}".to_string());
+    }
+    match crate::fetch::process_and_write(&spec, body) {
+        Ok(msg) => Response::json(200, format!("{{\"ok\":true,\"message\":\"{}\"}}", jesc(&msg))),
+        Err(e) => Response::json(200, format!("{{\"ok\":false,\"message\":\"{}\"}}", jesc(&e))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +252,47 @@ mod tests {
     #[test]
     fn parse_rejects_garbage() {
         assert!(parse_request("", "").is_none());
+    }
+
+    #[test]
+    fn route_games_lists_ssq() {
+        let r = handle("GET", "/api/games", "", "");
+        assert_eq!(r.status, 200);
+        assert!(r.body.contains("\"key\":\"ssq\""));
+        assert!(r.body.contains("\"hasData\":"));
+    }
+
+    #[test]
+    fn route_analysis_ssq_available() {
+        let r = handle("GET", "/api/analysis", "game=ssq", ""); // 占位 data/ssq.csv 有 5 期
+        assert_eq!(r.status, 200);
+        assert!(r.body.contains("\"available\":true"));
+    }
+
+    #[test]
+    fn route_analysis_unknown_game_404() {
+        let r = handle("GET", "/api/analysis", "game=zzz", "");
+        assert_eq!(r.status, 404);
+    }
+
+    #[test]
+    fn route_unknown_path_404() {
+        assert_eq!(handle("GET", "/nope", "", "").status, 404);
+    }
+
+    #[test]
+    fn route_import_unsupported_game_400() {
+        // dlt 无 fetch 源 => 400,不写文件
+        let r = handle("POST", "/api/import", "game=dlt", "{}");
+        assert_eq!(r.status, 400);
+        assert!(r.body.contains("\"ok\":false"));
+    }
+
+    #[test]
+    fn route_import_garbage_body_no_overwrite() {
+        // ssq 合法但 body 非法 JSON => ok:false,且不覆盖 data/ssq.csv
+        let r = handle("POST", "/api/import", "game=ssq", "not-json");
+        assert_eq!(r.status, 200);
+        assert!(r.body.contains("\"ok\":false"));
     }
 }
