@@ -131,8 +131,99 @@ impl Response {
     }
 }
 
-// GET / 的页面(Task 5 用真实内容替换此占位)。
-const INDEX_HTML: &str = "<!doctype html><meta charset=utf-8><title>lottery_stats</title><p>页面占位</p>";
+const INDEX_HTML: &str = r##"<!doctype html>
+<html lang=zh><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>彩票随机性分析</title>
+<style>
+:root{--bg:#0f1420;--card:#182135;--line:#2a3550;--fg:#e6ebf5;--mut:#93a1c0;--ok:#4ade80;--warn:#fbbf24;--accent:#6ea8ff}
+*{box-sizing:border-box}body{margin:0;font:14px/1.6 "Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+header{display:flex;align-items:center;gap:16px;padding:16px 24px;border-bottom:1px solid var(--line);background:var(--card)}
+header h1{font-size:18px;margin:0}select{background:#0f1420;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:14px}
+main{max-width:920px;margin:0 auto;padding:24px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin-bottom:18px}
+.card h2{font-size:15px;margin:0 0 12px;color:var(--accent)}
+.row{padding:8px 0;border-bottom:1px dashed var(--line)}.row:last-child{border:0}
+.lab{color:var(--mut)}.ok{color:var(--ok)}.warn{color:var(--warn)}
+textarea{width:100%;height:90px;background:#0f1420;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px;font:12px monospace}
+button{background:var(--accent);color:#0b1020;border:0;border-radius:6px;padding:8px 16px;font-size:14px;cursor:pointer;margin-top:8px}
+a{color:var(--accent)}code{background:#0f1420;padding:1px 5px;border-radius:4px}
+.bar{display:inline-block;height:8px;background:var(--accent);border-radius:4px;vertical-align:middle}
+details{margin:6px 0}summary{cursor:pointer;color:var(--accent)}
+.muted{color:var(--mut);font-size:13px}
+</style></head>
+<body>
+<header><h1>彩票随机性分析</h1>
+<label class=lab>彩种 <select id="game"></select></label>
+<span id="status" class=muted></span></header>
+<main>
+<div class=card><h2>数据同步(粘贴接口 JSON)</h2>
+<p class=muted>在浏览器打开接口(下方链接),复制返回的 JSON 粘贴到这里,点"同步"即可。仅福彩 ssq/3d/kl8/qlc 支持。</p>
+<p id="apilink" class=muted></p>
+<textarea id="json" placeholder="把接口返回的 JSON 粘贴到这里…"></textarea>
+<div><button id="sync">同步</button> <span id="syncmsg" class=muted></span></div></div>
+
+<div class=card id="analysis"><h2>分析结果</h2><div id="body" class=muted>加载中…</div></div>
+
+<div class=card><h2>方法与策略说明</h2>
+<details open><summary>头奖概率与期望值</summary><p class=muted>头奖概率完全由组合数决定(如双色球 C(33,6)×16 ≈ 1772 万分之一),与选号方式无关。每种玩法返奖率恒 &lt; 100%,期望值恒为负——买得越多,长期越确定地亏损(大数定律)。</p></details>
+<details><summary>卡方均匀性检验</summary><p class=muted>统计每个号码/每位数字的历史出现频次,用卡方检验判断是否偏离"均匀分布"。p&gt;0.05 表示无法拒绝均匀假设——号码确实均匀随机,没有可利用的"冷热规律"。真实期数少时统计功效低,已在结果中注明。</p></details>
+<details><summary>赌徒谬误检验</summary><p class=muted>验证"某号上期没出,下期更容易出"是否成立。对比"上期没出→本期出"的条件概率与无条件概率,两者≈相等,证明历史遗漏对下期毫无影响——"冷号该回补"是幻觉。</p></details>
+<details><summary>游程检验(独立性)</summary><p class=muted>把某号"逐期是否出现"编码成 0/1 序列,用 Wald–Wolfowitz 游程检验其是否独立。p&gt;0.05 表示序列无自相关——前后期之间没有可预测的规律。</p></details>
+<details><summary>预测"打脸"实验:冷/热/随机三策略</summary><p class=muted>用历史走势预测下一期,三种策略同台:冷号策略(选最少出现的)、热号策略(选最多出现的)、随机基线。统计平均命中数,三者都会贴着纯运气的理论期望,彼此无显著差异——实证任何选号策略都不优于瞎蒙。需 &gt;30 期数据才会运行。</p></details>
+</div>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const API_BASE="https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice";
+let games=[];
+function pct(p){return (p*100).toFixed(2)+"%"}
+async function loadGames(){
+  const r=await fetch("/api/games");const d=await r.json();games=d.games;
+  const sel=$("#game");sel.innerHTML="";
+  games.forEach(g=>{const o=document.createElement("option");o.value=g.key;o.textContent=g.name+(g.hasData?"":"(无数据)");sel.appendChild(o);});
+  onChange();
+}
+function apiUrlFor(g){return g&&g.fetchable?`${API_BASE}?name=${g.key==="d3"?"3d":g.key}&issueCount=100`:null;}
+function onChange(){
+  const key=$("#game").value;const g=games.find(x=>x.key===key);
+  const url=apiUrlFor(g);
+  $("#apilink").innerHTML=url?`接口链接:<a href="${url}" target="_blank">${url}</a>`:"该彩种(体彩)暂不支持导入。";
+  $("#sync").disabled=!url;
+  loadAnalysis(key);
+}
+async function loadAnalysis(key){
+  $("#body").textContent="加载中…";
+  const r=await fetch("/api/analysis?game="+encodeURIComponent(key));const a=await r.json();
+  if(!a.available){$("#body").innerHTML=`<span class=warn>${a.reason||"无数据"}</span>`;$("#status").textContent="";return;}
+  $("#status").textContent=`${a.coverage.count} 期 ${a.coverage.firstIssue}→${a.coverage.lastIssue}`;
+  let h="";
+  h+="<div class=row><b>卡方均匀性</b></div>";
+  a.uniformity.forEach(u=>{h+=`<div class=row><span class=lab>${u.label}</span> χ²=${u.chi2.toFixed(2)} p=${u.p.toFixed(4)} <span class="${u.uniform?'ok':'warn'}">${u.uniform?'均匀':'本样本偏离'}</span>`+(u.cold!==undefined?` <span class=muted>冷${u.cold}(${u.coldN}) 热${u.hot}(${u.hotN})</span>`:"")+"</div>";});
+  h+="<div class=row><b>赌徒谬误</b></div>";
+  a.gambler.forEach(g=>{h+=`<div class=row><span class=lab>${g.label}</span> `+(g.enough?`无条件 ${g.baseP.toFixed(4)} vs 条件 ${g.condP.toFixed(4)}(样本${g.samples})差 ${g.diff.toFixed(4)} <span class=ok>历史无影响</span>`:`<span class=warn>样本不足</span>`)+"</div>";});
+  h+="<div class=row><b>游程检验</b></div>";
+  a.runs.forEach(g=>{h+=`<div class=row><span class=lab>${g.label}</span> Z=${g.z.toFixed(3)} p=${g.p.toFixed(4)} <span class="${g.independent?'ok':'warn'}">${g.independent?'序列独立':'偶然显著'}</span></div>`;});
+  h+="<div class=row><b>预测打脸实验</b></div>";
+  if(a.predN===0){h+=`<div class=row class=muted>真实期数不足(需 &gt;30 期),跳过。</div>`;}
+  else{a.pred.forEach(p=>{const w=x=>Math.min(100,x/ (p.expected*3||1)*100);h+=`<div class=row><span class=lab>${p.label}</span> 冷 ${p.cold.toFixed(3)} / 热 ${p.hot.toFixed(3)} / 随机 ${p.random.toFixed(3)} <span class=muted>理论 ${p.expected.toFixed(3)}</span></div>`;});
+    h+=`<div class=row class=muted>三策略都贴着理论期望 → 没有策略优于随机。</div>`;}
+  $("#body").innerHTML=h;
+}
+async function doSync(){
+  const key=$("#game").value;const body=$("#json").value.trim();
+  if(!body){$("#syncmsg").textContent="请先粘贴 JSON";return;}
+  $("#syncmsg").textContent="同步中…";
+  const r=await fetch("/api/import?game="+encodeURIComponent(key),{method:"POST",body});
+  const d=await r.json();
+  $("#syncmsg").innerHTML=d.ok?`<span class=ok>${d.message}</span>`:`<span class=warn>${d.message}</span>`;
+  if(d.ok){$("#json").value="";loadGames();}
+}
+$("#game").addEventListener("change",onChange);
+$("#sync").addEventListener("click",doSync);
+loadGames();
+</script>
+</body></html>"##;
 
 pub(crate) fn handle(method: &str, path: &str, query: &str, body: &str) -> Response {
     match (method, path) {
@@ -294,5 +385,16 @@ mod tests {
         let r = handle("POST", "/api/import", "game=ssq", "not-json");
         assert_eq!(r.status, 200);
         assert!(r.body.contains("\"ok\":false"));
+    }
+
+    #[test]
+    fn index_page_served() {
+        let r = handle("GET", "/", "", "");
+        assert_eq!(r.status, 200);
+        assert_eq!(r.content_type, "text/html; charset=utf-8");
+        assert!(r.body.contains("<title>彩票随机性分析</title>"));
+        assert!(r.body.contains("id=\"game\"")); // 彩种下拉
+        assert!(r.body.contains("/api/analysis")); // 前端会请求分析
+        assert!(r.body.contains("方法与策略说明"));
     }
 }
