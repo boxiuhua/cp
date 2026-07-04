@@ -148,7 +148,6 @@ main{max-width:920px;margin:0 auto;padding:24px}
 textarea{width:100%;height:90px;background:#0f1420;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px;font:12px monospace}
 button{background:var(--accent);color:#0b1020;border:0;border-radius:6px;padding:8px 16px;font-size:14px;cursor:pointer;margin-top:8px}
 a{color:var(--accent)}code{background:#0f1420;padding:1px 5px;border-radius:4px}
-.bar{display:inline-block;height:8px;background:var(--accent);border-radius:4px;vertical-align:middle}
 details{margin:6px 0}summary{cursor:pointer;color:var(--accent)}
 .muted{color:var(--mut);font-size:13px}
 </style></head>
@@ -177,7 +176,6 @@ details{margin:6px 0}summary{cursor:pointer;color:var(--accent)}
 const $=s=>document.querySelector(s);
 const API_BASE="https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice";
 let games=[];
-function pct(p){return (p*100).toFixed(2)+"%"}
 async function loadGames(){
   const r=await fetch("/api/games");const d=await r.json();games=d.games;
   const sel=$("#game");sel.innerHTML="";
@@ -206,7 +204,7 @@ async function loadAnalysis(key){
   a.runs.forEach(g=>{h+=`<div class=row><span class=lab>${g.label}</span> Z=${g.z.toFixed(3)} p=${g.p.toFixed(4)} <span class="${g.independent?'ok':'warn'}">${g.independent?'序列独立':'偶然显著'}</span></div>`;});
   h+="<div class=row><b>预测打脸实验</b></div>";
   if(a.predN===0){h+=`<div class=row class=muted>真实期数不足(需 &gt;30 期),跳过。</div>`;}
-  else{a.pred.forEach(p=>{const w=x=>Math.min(100,x/ (p.expected*3||1)*100);h+=`<div class=row><span class=lab>${p.label}</span> 冷 ${p.cold.toFixed(3)} / 热 ${p.hot.toFixed(3)} / 随机 ${p.random.toFixed(3)} <span class=muted>理论 ${p.expected.toFixed(3)}</span></div>`;});
+  else{a.pred.forEach(p=>{h+=`<div class=row><span class=lab>${p.label}</span> 冷 ${p.cold.toFixed(3)} / 热 ${p.hot.toFixed(3)} / 随机 ${p.random.toFixed(3)} <span class=muted>理论 ${p.expected.toFixed(3)}</span></div>`;});
     h+=`<div class=row class=muted>三策略都贴着理论期望 → 没有策略优于随机。</div>`;}
   $("#body").innerHTML=h;
 }
@@ -300,6 +298,7 @@ fn parse_content_length(head: &str) -> usize {
 
 fn handle_conn(mut stream: std::net::TcpStream) -> std::io::Result<()> {
     use std::io::{Read, Write};
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(15)));
     let mut buf: Vec<u8> = Vec::new();
     let mut tmp = [0u8; 8192];
     let mut headers_end = None;
