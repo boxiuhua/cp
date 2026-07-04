@@ -156,6 +156,94 @@ pub(crate) fn analyze_uniformity(spec: &GameSpec, draws: &[DrawRecord]) {
     }
 }
 
+pub(crate) enum TargetKind {
+    PoolBall(u32),
+    DigitAt { pos: usize, digit: u32 },
+}
+
+// 每个组件的固定代表 target(可复现)。
+pub(crate) fn default_target(comp: &Component) -> TargetKind {
+    match comp {
+        Component::Pool { size, .. } => TargetKind::PoolBall((*size).min(7)),
+        Component::Digits { bases, .. } => TargetKind::DigitAt { pos: 0, digit: (bases[0] - 1).min(7) },
+    }
+}
+
+// 一期记录里,该 target 是否"出现"。
+pub(crate) fn target_hit(rec: &DrawRecord, comp_idx: usize, target: &TargetKind) -> bool {
+    let seg = &rec.components[comp_idx];
+    match target {
+        TargetKind::PoolBall(b) => seg.contains(b),
+        TargetKind::DigitAt { pos, digit } => seg[*pos] == *digit,
+    }
+}
+
+// 该 target 的无条件出现概率。
+fn base_prob(comp: &Component, target: &TargetKind) -> f64 {
+    match (comp, target) {
+        (Component::Pool { size, pick, .. }, _) => *pick as f64 / *size as f64,
+        (Component::Digits { bases, .. }, TargetKind::DigitAt { pos, .. }) => 1.0 / bases[*pos] as f64,
+        _ => 0.0,
+    }
+}
+
+// [真实] 赌徒谬误:每组件挑代表 target,验条件概率 ≈ 无条件。
+pub(crate) fn analyze_gamblers_fallacy(spec: &GameSpec, draws: &[DrawRecord]) {
+    println!("\n-- [真实] 赌徒谬误检验 --");
+    for (ci, comp) in spec.components.iter().enumerate() {
+        let target = default_target(comp);
+        let (mut gap_hit, mut gap_miss) = (0u64, 0u64);
+        let mut prev_absent = false;
+        for d in draws {
+            let hit = target_hit(d, ci, &target);
+            if prev_absent {
+                if hit { gap_hit += 1; } else { gap_miss += 1; }
+            }
+            prev_absent = !hit;
+        }
+        let denom = gap_hit + gap_miss;
+        let base = base_prob(comp, &target);
+        let label = describe_target(comp, &target);
+        if denom == 0 {
+            println!("[{}] 样本不足,跳过。", label);
+            continue;
+        }
+        let cond = gap_hit as f64 / denom as f64;
+        println!(
+            "[{}] 无条件 P={:.4}  条件 P(出|上期没出)={:.4}(样本{}次)  差={:.4} =>历史遗漏无影响。",
+            label, base, cond, denom, (cond - base).abs()
+        );
+    }
+}
+
+// [真实] 游程检验:代表 target 的逐期出现序列是否独立。
+pub(crate) fn analyze_runs(spec: &GameSpec, draws: &[DrawRecord]) {
+    println!("\n-- [真实] 游程检验 --");
+    for (ci, comp) in spec.components.iter().enumerate() {
+        let target = default_target(comp);
+        let seq: Vec<bool> = draws.iter().map(|d| target_hit(d, ci, &target)).collect();
+        let (runs, mu, z) = crate::runs_z(&seq);
+        let p = crate::normal_two_sided_p(z);
+        let label = describe_target(comp, &target);
+        println!(
+            "[{}] 出现 {} 次  R={:.0} μ={:.1} Z={:.3} 双尾p={:.4} =>{}",
+            label, seq.iter().filter(|&&b| b).count(), runs, mu, z, p,
+            if p > 0.05 { "序列独立" } else { "偶然显著(小样本)" }
+        );
+    }
+}
+
+// 生成 target 的人类可读标签。
+fn describe_target(comp: &Component, target: &TargetKind) -> String {
+    match (comp, target) {
+        (Component::Pool { label, .. }, TargetKind::PoolBall(b)) => format!("{} 号{:02}", label, b),
+        (Component::Digits { label, .. }, TargetKind::DigitAt { pos, digit }) => {
+            format!("{} 第{}位=数字{}", label, pos + 1, digit)
+        }
+        _ => "?".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +326,27 @@ mod tests {
         let pos1 = digit_counts(&draws, 0, 1, 10);
         assert_eq!(pos1[7], 1);
         assert_eq!(pos1[0], 1);
+    }
+
+    #[test]
+    fn target_hit_pool_and_digit() {
+        let pool_rec = rec(vec![vec![1, 7, 15, 22, 28, 33], vec![9]]);
+        assert!(target_hit(&pool_rec, 0, &TargetKind::PoolBall(7)));
+        assert!(!target_hit(&pool_rec, 0, &TargetKind::PoolBall(8)));
+        let digit_rec = rec(vec![vec![7, 0, 2]]);
+        assert!(target_hit(&digit_rec, 0, &TargetKind::DigitAt { pos: 0, digit: 7 }));
+        assert!(!target_hit(&digit_rec, 0, &TargetKind::DigitAt { pos: 0, digit: 3 }));
+    }
+
+    #[test]
+    fn default_target_values() {
+        match default_target(&Component::Pool { label: "x", size: 33, pick: 6 }) {
+            TargetKind::PoolBall(b) => assert_eq!(b, 7),
+            _ => panic!("expected PoolBall"),
+        }
+        match default_target(&Component::Digits { label: "x", bases: vec![10, 10, 10] }) {
+            TargetKind::DigitAt { pos, digit } => { assert_eq!(pos, 0); assert_eq!(digit, 7); }
+            _ => panic!("expected DigitAt"),
+        }
     }
 }
