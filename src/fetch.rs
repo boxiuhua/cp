@@ -110,7 +110,7 @@ pub(crate) fn print_usage() {
     println!("  lottery_stats                    运行完整分析报告(读 data/*.csv)");
     println!("  lottery_stats fetch <彩种> [期数]   抓取并写入 data/<彩种>.csv(默认 100 期)");
     println!("  lottery_stats help               显示本说明");
-    println!("支持抓取的彩种:ssq(双色球) 3d(福彩3D) kl8(快乐8) qlc(7乐彩)");
+    println!("支持抓取的彩种:ssq(双色球) d3(福彩3D) kl8(快乐8) qlc(7乐彩)");
 }
 
 // 调用系统 curl 抓取 URL 内容。
@@ -150,7 +150,7 @@ pub(crate) fn do_fetch(args: &[String]) -> Result<String, String> {
     let spec = real_data_games()
         .into_iter()
         .find(|g| &g.key == key)
-        .ok_or_else(|| format!("未知彩种 '{}'。支持:ssq/3d/kl8/qlc/dlt/pl3/pl5/qxc", key))?;
+        .ok_or_else(|| format!("未知彩种 '{}'。支持:ssq/d3/kl8/qlc/dlt/pl3/pl5/qxc", key))?;
     let src = spec
         .fetch
         .as_ref()
