@@ -54,6 +54,83 @@ pub(crate) fn analysis_to_json(a: &GameAnalysis) -> String {
         uni.join(","), gam.join(","), run.join(","), a.pred_n, pred.join(","))
 }
 
+pub(crate) struct Request {
+    pub method: String,
+    pub path: String,
+    pub query: String,
+    pub body: String,
+}
+
+pub(crate) fn parse_request(head: &str, body: &str) -> Option<Request> {
+    let first = head.lines().next()?;
+    let mut it = first.split_whitespace();
+    let method = it.next()?.to_string();
+    let target = it.next()?.to_string();
+    let (path, query) = match target.split_once('?') {
+        Some((p, q)) => (p.to_string(), q.to_string()),
+        None => (target, String::new()),
+    };
+    Some(Request { method, path, query, body: body.to_string() })
+}
+
+fn url_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'+' => { out.push(b' '); i += 1; }
+            b'%' if i + 2 < b.len() => {
+                let h = |c: u8| (c as char).to_digit(16);
+                if let (Some(a), Some(c)) = (h(b[i + 1]), h(b[i + 2])) {
+                    out.push((a * 16 + c) as u8);
+                    i += 3;
+                } else { out.push(b'%'); i += 1; }
+            }
+            c => { out.push(c); i += 1; }
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+pub(crate) fn query_get(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == key {
+                return Some(url_decode(v));
+            }
+        }
+    }
+    None
+}
+
+pub(crate) struct Response {
+    pub status: u16,
+    pub content_type: &'static str,
+    pub body: String,
+}
+
+impl Response {
+    pub fn json(status: u16, body: String) -> Response {
+        Response { status, content_type: "application/json; charset=utf-8", body }
+    }
+    pub fn html(body: String) -> Response {
+        Response { status: 200, content_type: "text/html; charset=utf-8", body }
+    }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let reason = match self.status {
+            200 => "OK", 400 => "Bad Request", 404 => "Not Found", 405 => "Method Not Allowed", _ => "OK",
+        };
+        let head = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            self.status, reason, self.content_type, self.body.as_bytes().len()
+        );
+        let mut v = head.into_bytes();
+        v.extend_from_slice(self.body.as_bytes());
+        v
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +161,36 @@ mod tests {
         assert!(j.contains("\"runs\":["));
         assert!(j.contains("\"pred\":["));
         assert!(j.contains("\"coverage\":"));
+    }
+
+    #[test]
+    fn parse_get_with_query() {
+        let r = parse_request("GET /api/analysis?game=ssq HTTP/1.1\r\nHost: x", "").unwrap();
+        assert_eq!(r.method, "GET");
+        assert_eq!(r.path, "/api/analysis");
+        assert_eq!(r.query, "game=ssq");
+        assert_eq!(query_get(&r.query, "game").as_deref(), Some("ssq"));
+    }
+
+    #[test]
+    fn parse_post_body_and_urldecode() {
+        let r = parse_request("POST /api/import?game=ssq HTTP/1.1", "{\"a\":1}").unwrap();
+        assert_eq!(r.method, "POST");
+        assert_eq!(r.body, "{\"a\":1}");
+        assert_eq!(query_get("k=%E4%B8%AD", "k").as_deref(), Some("中"));
+    }
+
+    #[test]
+    fn response_bytes_have_status_and_length() {
+        let bytes = Response::json(404, "{}".to_string()).to_bytes();
+        let s = String::from_utf8_lossy(&bytes);
+        assert!(s.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(s.contains("Content-Length: 2\r\n"));
+        assert!(s.ends_with("{}"));
+    }
+
+    #[test]
+    fn parse_rejects_garbage() {
+        assert!(parse_request("", "").is_none());
     }
 }
