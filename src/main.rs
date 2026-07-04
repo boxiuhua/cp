@@ -12,7 +12,6 @@
 
 mod game_spec;
 mod realdata;
-mod ssq;
 
 // ------------------------- 1. 无依赖 PRNG -----------------------------
 // xorshift128+,周期长、质量高,足够做蒙特卡洛与随机性演示。
@@ -499,25 +498,7 @@ fn main() {
     runs_test_demo(&mut rng);
     monte_carlo_bankroll(&mut rng);
 
-    println!("\n========== 7. 真实历史数据篇(双色球)==========");
-    match ssq::load_ssq("data/ssq.csv") {
-        Ok((draws, skips)) => {
-            println!("加载 data/ssq.csv:成功解析 {} 期,跳过 {} 行。", draws.len(), skips.len());
-            for s in skips.iter().take(10) {
-                println!("  [跳过] 第 {} 行:{}", s.line, s.reason);
-            }
-            if draws.len() < 2 {
-                println!("有效数据不足(< 2 期),跳过真实数据分析。请在 data/ssq.csv 填入真实开奖。");
-            } else {
-                ssq::run_real_data_report(&draws, &mut rng);
-            }
-        }
-        Err(e) => {
-            println!("未找到/无法读取 data/ssq.csv({}),已跳过真实数据分析。", e);
-            println!("格式:每行 `期号,日期,红1..红6,蓝`,红球 6 个∈[1,33] 互异,蓝球∈[1,16]。");
-            println!("详见 data/README.md。");
-        }
-    }
+    realdata::run_all_real_data(&mut rng);
 
     println!("\n════════════════════ 总结 ════════════════════");
     println!("1. 头奖概率由组合数唯一决定,固定不变。");

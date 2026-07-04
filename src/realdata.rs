@@ -379,6 +379,49 @@ pub(crate) fn print_prediction(n: usize, preds: &[CompPred]) {
     }
 }
 
+use crate::game_spec::real_data_games;
+
+// 单彩种报告:覆盖行 + 四项分析 + 预测实验。
+pub(crate) fn run_game_report(spec: &GameSpec, draws: &[DrawRecord], rng: &mut crate::Rng) {
+    let first = &draws[0];
+    let last = &draws[draws.len() - 1];
+    println!(
+        "数据覆盖:{}({}) → {}({}),共 {} 期。最新一期号码 {:?}",
+        first.issue, first.date, last.issue, last.date, draws.len(), last.components
+    );
+    analyze_uniformity(spec, draws);
+    analyze_gamblers_fallacy(spec, draws);
+    analyze_runs(spec, draws);
+    let (n, preds) = prediction_stats(spec, draws, 30, rng);
+    print_prediction(n, &preds);
+}
+
+// 第 7 章总编排:遍历 8 种彩票,有数据文件的跑完整分析,缺失则一行跳过。
+pub(crate) fn run_all_real_data(rng: &mut crate::Rng) {
+    println!("\n========== 7. 真实历史数据篇(全彩种)==========");
+    for spec in real_data_games() {
+        match load_game(&spec) {
+            Ok((draws, skips)) => {
+                println!(
+                    "\n【{}】{}:解析 {} 期,跳过 {} 行。",
+                    spec.name, spec.file, draws.len(), skips.len()
+                );
+                for s in skips.iter().take(5) {
+                    println!("  [跳过] 第 {} 行:{}", s.line, s.reason);
+                }
+                if draws.len() < 2 {
+                    println!("  有效数据不足(<2 期),跳过分析。");
+                } else {
+                    run_game_report(&spec, &draws, rng);
+                }
+            }
+            Err(_) => {
+                println!("\n【{}】未找到 {},跳过(填入真实数据即可启用)。", spec.name, spec.file);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
