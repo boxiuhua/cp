@@ -13,6 +13,7 @@
 mod fetch;
 mod game_spec;
 mod realdata;
+mod server;
 
 // ------------------------- 1. 无依赖 PRNG -----------------------------
 // xorshift128+,周期长、质量高,足够做蒙特卡洛与随机性演示。
