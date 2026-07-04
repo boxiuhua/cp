@@ -112,47 +112,177 @@ pub(crate) fn digit_counts(draws: &[DrawRecord], comp_idx: usize, pos: usize, ba
     c
 }
 
-// [真实] 均匀性:Pool 按号池、Digits 逐位分别做卡方。
-pub(crate) fn analyze_uniformity(spec: &GameSpec, draws: &[DrawRecord]) {
-    println!("\n-- [真实] 卡方均匀性检验 --");
+pub(crate) struct UniformRow {
+    pub label: String,
+    pub expected: f64,
+    pub chi2: f64,
+    pub df: u32,
+    pub p: f64,
+    pub uniform: bool,
+    pub extra: Option<(u32, u64, u32, u64, f64)>, // (cold, coldN, hot, hotN, sd) 仅池型
+}
+pub(crate) struct GamblerRow {
+    pub label: String, pub base_p: f64, pub cond_p: f64, pub samples: u64, pub diff: f64, pub enough: bool,
+}
+pub(crate) struct RunsRow {
+    pub label: String, pub appear: u64, pub runs: f64, pub mu: f64, pub z: f64, pub p: f64, pub independent: bool,
+}
+pub(crate) struct Coverage {
+    pub first_issue: String, pub first_date: String, pub last_issue: String, pub last_date: String,
+    pub count: usize, pub latest: Vec<Vec<u32>>,
+}
+pub(crate) struct GameAnalysis {
+    pub coverage: Coverage,
+    pub uniformity: Vec<UniformRow>,
+    pub gambler: Vec<GamblerRow>,
+    pub runs: Vec<RunsRow>,
+    pub pred_n: usize,
+    pub pred: Vec<CompPred>,
+}
+
+pub(crate) fn compute_uniformity(spec: &GameSpec, draws: &[DrawRecord]) -> Vec<UniformRow> {
+    let mut rows = Vec::new();
     for (ci, comp) in spec.components.iter().enumerate() {
         match comp {
             Component::Pool { label, size, pick } => {
                 let counts = pool_counts(draws, ci, *size);
                 let expected = draws.len() as f64 * *pick as f64 / *size as f64;
                 let chi2 = crate::chi2_from_freq(&counts[1..=*size as usize], expected);
-                let df = (*size - 1) as f64;
-                let p = crate::chi2_pvalue(chi2, df);
+                let df = *size - 1;
+                let p = crate::chi2_pvalue(chi2, df as f64);
                 let sd = expected.sqrt();
                 let mut idx: Vec<usize> = (1..=*size as usize).collect();
                 idx.sort_by_key(|&i| counts[i]);
                 let (cold, hot) = (idx[0], idx[*size as usize - 1]);
-                println!(
-                    "[{} {}/{}] 期望频次 {:.1}  χ²={:.2} df={} p={:.4}  =>{}",
-                    label, pick, size, expected, chi2, df as u32, p,
-                    if p > 0.05 { "均匀" } else { "本样本偏离(小样本功效低)" }
-                );
-                println!(
-                    "  最冷 {:02}({}次) vs 最热 {:02}({}次),差 ≈{:.1}σ,属随机涨落。",
-                    cold, counts[cold], hot, counts[hot],
-                    (counts[hot] - counts[cold]) as f64 / sd.max(1e-9)
-                );
+                rows.push(UniformRow {
+                    label: format!("{} {}/{}", label, pick, size),
+                    expected, chi2, df, p, uniform: p > 0.05,
+                    extra: Some((cold as u32, counts[cold], hot as u32, counts[hot], sd)),
+                });
             }
             Component::Digits { label, bases } => {
                 for (pos, &base) in bases.iter().enumerate() {
                     let counts = digit_counts(draws, ci, pos, base);
                     let expected = draws.len() as f64 / base as f64;
                     let chi2 = crate::chi2_from_freq(&counts, expected);
-                    let df = (base - 1) as f64;
-                    let p = crate::chi2_pvalue(chi2, df);
-                    println!(
-                        "[{} 第{}位 0-{}] 期望频次 {:.1}  χ²={:.2} df={} p={:.4}  =>{}",
-                        label, pos + 1, base - 1, expected, chi2, df as u32, p,
-                        if p > 0.05 { "均匀" } else { "本样本偏离(小样本功效低)" }
-                    );
+                    let df = base - 1;
+                    let p = crate::chi2_pvalue(chi2, df as f64);
+                    rows.push(UniformRow {
+                        label: format!("{} 第{}位 0-{}", label, pos + 1, base - 1),
+                        expected, chi2, df, p, uniform: p > 0.05, extra: None,
+                    });
                 }
             }
         }
+    }
+    rows
+}
+
+pub(crate) fn format_uniformity(rows: &[UniformRow]) -> String {
+    let mut s = String::from("\n-- [真实] 卡方均匀性检验 --\n");
+    for r in rows {
+        s.push_str(&format!(
+            "[{}] 期望频次 {:.1}  χ²={:.2} df={} p={:.4}  =>{}\n",
+            r.label, r.expected, r.chi2, r.df, r.p,
+            if r.uniform { "均匀" } else { "本样本偏离(小样本功效低)" }
+        ));
+        if let Some((cold, cn, hot, hn, sd)) = r.extra {
+            s.push_str(&format!(
+                "  最冷 {:02}({}次) vs 最热 {:02}({}次),差 ≈{:.1}σ,属随机涨落。\n",
+                cold, cn, hot, hn, (hn - cn) as f64 / sd.max(1e-9)
+            ));
+        }
+    }
+    s
+}
+
+pub(crate) fn compute_gamblers(spec: &GameSpec, draws: &[DrawRecord]) -> Vec<GamblerRow> {
+    let mut rows = Vec::new();
+    for (ci, comp) in spec.components.iter().enumerate() {
+        let target = default_target(comp);
+        let (mut gap_hit, mut gap_miss) = (0u64, 0u64);
+        let mut prev_absent = false;
+        for d in draws {
+            let hit = target_hit(d, ci, &target);
+            if prev_absent {
+                if hit { gap_hit += 1; } else { gap_miss += 1; }
+            }
+            prev_absent = !hit;
+        }
+        let denom = gap_hit + gap_miss;
+        let base = base_prob(comp, &target);
+        let label = describe_target(comp, &target);
+        if denom == 0 {
+            rows.push(GamblerRow { label, base_p: base, cond_p: 0.0, samples: 0, diff: 0.0, enough: false });
+        } else {
+            let cond = gap_hit as f64 / denom as f64;
+            rows.push(GamblerRow { label, base_p: base, cond_p: cond, samples: denom, diff: (cond - base).abs(), enough: true });
+        }
+    }
+    rows
+}
+
+pub(crate) fn format_gamblers(rows: &[GamblerRow]) -> String {
+    let mut s = String::from("\n-- [真实] 赌徒谬误检验 --\n");
+    for r in rows {
+        if !r.enough {
+            s.push_str(&format!("[{}] 样本不足,跳过。\n", r.label));
+        } else {
+            s.push_str(&format!(
+                "[{}] 无条件 P={:.4}  条件 P(出|上期没出)={:.4}(样本{}次)  差={:.4} =>历史遗漏无影响。\n",
+                r.label, r.base_p, r.cond_p, r.samples, r.diff
+            ));
+        }
+    }
+    s
+}
+
+pub(crate) fn compute_runs(spec: &GameSpec, draws: &[DrawRecord]) -> Vec<RunsRow> {
+    let mut rows = Vec::new();
+    for (ci, comp) in spec.components.iter().enumerate() {
+        let target = default_target(comp);
+        let seq: Vec<bool> = draws.iter().map(|d| target_hit(d, ci, &target)).collect();
+        let (runs, mu, z) = crate::runs_z(&seq);
+        let p = crate::normal_two_sided_p(z);
+        rows.push(RunsRow {
+            label: describe_target(comp, &target),
+            appear: seq.iter().filter(|&&b| b).count() as u64,
+            runs, mu, z, p, independent: p > 0.05,
+        });
+    }
+    rows
+}
+
+pub(crate) fn format_runs(rows: &[RunsRow]) -> String {
+    let mut s = String::from("\n-- [真实] 游程检验 --\n");
+    for r in rows {
+        s.push_str(&format!(
+            "[{}] 出现 {} 次  R={:.0} μ={:.1} Z={:.3} 双尾p={:.4} =>{}\n",
+            r.label, r.appear, r.runs, r.mu, r.z, r.p,
+            if r.independent { "序列独立" } else { "偶然显著(小样本)" }
+        ));
+    }
+    s
+}
+
+pub(crate) fn compute_coverage(draws: &[DrawRecord]) -> Coverage {
+    let f = &draws[0];
+    let l = &draws[draws.len() - 1];
+    Coverage {
+        first_issue: f.issue.clone(), first_date: f.date.clone(),
+        last_issue: l.issue.clone(), last_date: l.date.clone(),
+        count: draws.len(), latest: l.components.clone(),
+    }
+}
+
+pub(crate) fn analyze_game(spec: &GameSpec, draws: &[DrawRecord], rng: &mut crate::Rng) -> GameAnalysis {
+    let (pred_n, pred) = prediction_stats(spec, draws, 30, rng);
+    GameAnalysis {
+        coverage: compute_coverage(draws),
+        uniformity: compute_uniformity(spec, draws),
+        gambler: compute_gamblers(spec, draws),
+        runs: compute_runs(spec, draws),
+        pred_n, pred,
     }
 }
 
@@ -184,52 +314,6 @@ fn base_prob(comp: &Component, target: &TargetKind) -> f64 {
         (Component::Pool { size, pick, .. }, _) => *pick as f64 / *size as f64,
         (Component::Digits { bases, .. }, TargetKind::DigitAt { pos, .. }) => 1.0 / bases[*pos] as f64,
         _ => 0.0,
-    }
-}
-
-// [真实] 赌徒谬误:每组件挑代表 target,验条件概率 ≈ 无条件。
-pub(crate) fn analyze_gamblers_fallacy(spec: &GameSpec, draws: &[DrawRecord]) {
-    println!("\n-- [真实] 赌徒谬误检验 --");
-    for (ci, comp) in spec.components.iter().enumerate() {
-        let target = default_target(comp);
-        let (mut gap_hit, mut gap_miss) = (0u64, 0u64);
-        let mut prev_absent = false;
-        for d in draws {
-            let hit = target_hit(d, ci, &target);
-            if prev_absent {
-                if hit { gap_hit += 1; } else { gap_miss += 1; }
-            }
-            prev_absent = !hit;
-        }
-        let denom = gap_hit + gap_miss;
-        let base = base_prob(comp, &target);
-        let label = describe_target(comp, &target);
-        if denom == 0 {
-            println!("[{}] 样本不足,跳过。", label);
-            continue;
-        }
-        let cond = gap_hit as f64 / denom as f64;
-        println!(
-            "[{}] 无条件 P={:.4}  条件 P(出|上期没出)={:.4}(样本{}次)  差={:.4} =>历史遗漏无影响。",
-            label, base, cond, denom, (cond - base).abs()
-        );
-    }
-}
-
-// [真实] 游程检验:代表 target 的逐期出现序列是否独立。
-pub(crate) fn analyze_runs(spec: &GameSpec, draws: &[DrawRecord]) {
-    println!("\n-- [真实] 游程检验 --");
-    for (ci, comp) in spec.components.iter().enumerate() {
-        let target = default_target(comp);
-        let seq: Vec<bool> = draws.iter().map(|d| target_hit(d, ci, &target)).collect();
-        let (runs, mu, z) = crate::runs_z(&seq);
-        let p = crate::normal_two_sided_p(z);
-        let label = describe_target(comp, &target);
-        println!(
-            "[{}] 出现 {} 次  R={:.0} μ={:.1} Z={:.3} 双尾p={:.4} =>{}",
-            label, seq.iter().filter(|&&b| b).count(), runs, mu, z, p,
-            if p > 0.05 { "序列独立" } else { "偶然显著(小样本)" }
-        );
     }
 }
 
@@ -383,17 +467,16 @@ use crate::game_spec::real_data_games;
 
 // 单彩种报告:覆盖行 + 四项分析 + 预测实验。
 pub(crate) fn run_game_report(spec: &GameSpec, draws: &[DrawRecord], rng: &mut crate::Rng) {
-    let first = &draws[0];
-    let last = &draws[draws.len() - 1];
+    let a = analyze_game(spec, draws, rng);
+    let c = &a.coverage;
     println!(
         "数据覆盖:{}({}) → {}({}),共 {} 期。最新一期号码 {:?}",
-        first.issue, first.date, last.issue, last.date, draws.len(), last.components
+        c.first_issue, c.first_date, c.last_issue, c.last_date, c.count, c.latest
     );
-    analyze_uniformity(spec, draws);
-    analyze_gamblers_fallacy(spec, draws);
-    analyze_runs(spec, draws);
-    let (n, preds) = prediction_stats(spec, draws, 30, rng);
-    print_prediction(n, &preds);
+    print!("{}", format_uniformity(&a.uniformity));
+    print!("{}", format_gamblers(&a.gambler));
+    print!("{}", format_runs(&a.runs));
+    print_prediction(a.pred_n, &a.pred);
 }
 
 // 第 7 章总编排:遍历 8 种彩票,有数据文件的跑完整分析,缺失则一行跳过。
@@ -550,5 +633,33 @@ mod tests {
         // 3 位都固定为 7:热策略每期命中 3 位,冷策略 0
         assert!((preds[0].hot - 3.0).abs() < 1e-9, "hot={}", preds[0].hot);
         assert!(preds[0].cold.abs() < 1e-9, "cold={}", preds[0].cold);
+    }
+
+    #[test]
+    fn compute_and_format_uniformity_pool() {
+        let ssq = real_data_games().into_iter().find(|g| g.key == "ssq").unwrap();
+        // 两期,红球都 [1,2,3,4,5,6],蓝球 [1]/[2]
+        let draws = vec![rec(vec![vec![1,2,3,4,5,6], vec![1]]),
+                         rec(vec![vec![1,2,3,4,5,6], vec![2]])];
+        let rows = compute_uniformity(&ssq, &draws);
+        assert_eq!(rows.len(), 2); // 红球 + 蓝球
+        assert!(rows[0].label.starts_with("红球 6/33"));
+        assert!(rows[0].extra.is_some()); // 池型带冷热
+        let s = format_uniformity(&rows);
+        assert!(s.starts_with("\n-- [真实] 卡方均匀性检验 --\n"));
+        assert!(s.contains("[红球 6/33] 期望频次"));
+    }
+
+    #[test]
+    fn compute_runs_and_gamblers_shape() {
+        let ssq = real_data_games().into_iter().find(|g| g.key == "ssq").unwrap();
+        let draws = vec![rec(vec![vec![1,2,3,4,5,7], vec![1]]),
+                         rec(vec![vec![1,2,3,4,5,6], vec![2]]),
+                         rec(vec![vec![1,2,3,4,5,7], vec![3]])];
+        assert_eq!(compute_gamblers(&ssq, &draws).len(), 2);
+        assert_eq!(compute_runs(&ssq, &draws).len(), 2);
+        let cov = compute_coverage(&draws);
+        assert_eq!(cov.count, 3);
+        assert_eq!(cov.latest.len(), 2); // 两个组件
     }
 }
