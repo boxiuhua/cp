@@ -148,7 +148,7 @@ pub(crate) fn print_usage() {
     println!("  lottery_stats fetch <彩种> [期数]   抓取并写入 data/<彩种>.csv(默认 100 期)");
     println!("  lottery_stats import <彩种> <文件>  从接口 JSON 文件导入并写入 data/<彩种>.csv");
     println!("  lottery_stats help               显示本说明");
-    println!("  lottery_stats serve [端口]        启动本地网页(默认 8080),浏览器访问分析页面");
+    println!("  lottery_stats serve [端口]        启动本地网页(默认 8081),浏览器访问分析页面");
     println!("支持抓取的彩种:ssq(双色球) d3(福彩3D) kl8(快乐8) qlc(7乐彩)");
 }
 

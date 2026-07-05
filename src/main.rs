@@ -496,7 +496,7 @@ fn main() {
             return;
         }
         Some("serve") => {
-            let port: u16 = cli_args.get(2).and_then(|s| s.parse().ok()).unwrap_or(8080);
+            let port: u16 = cli_args.get(2).and_then(|s| s.parse().ok()).unwrap_or(8081);
             server::serve(port);
             return;
         }
