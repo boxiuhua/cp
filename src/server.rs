@@ -46,6 +46,14 @@ pub(crate) fn analysis_to_json(a: &GameAnalysis) -> String {
         let nums: Vec<String> = seg.iter().map(|n| n.to_string()).collect();
         format!("[{}]", nums.join(","))
     }).collect();
+    let bday: Vec<String> = a.crowd.birthday.iter().map(|b| format!(
+        "{{\"label\":\"{}\",\"above31\":{},\"actualLe31\":{},\"baseLe31\":{},\"actualAll\":{},\"baseAll\":{},\"w\":{},\"shareRatio\":{}}}",
+        jesc(&b.label), b.above31, num(b.actual_le31), num(b.base_le31), num(b.actual_all), num(b.base_all), num(b.w), num(b.share_ratio))).collect();
+    let cons: Vec<String> = a.crowd.consec.iter().map(|r| format!(
+        "{{\"label\":\"{}\",\"actual\":{},\"base\":{}}}", jesc(&r.label), num(r.actual), num(r.base))).collect();
+    let sms: Vec<String> = a.crowd.sums.iter().map(|r| format!(
+        "{{\"label\":\"{}\",\"actualLow\":{},\"meanSum\":{},\"midSum\":{}}}",
+        jesc(&r.label), num(r.actual_low), num(r.mean_sum), num(r.mid_sum))).collect();
     let picks: Vec<String> = a.picks.iter().map(|p| {
         let tk: Vec<String> = p.ticket.iter().map(|seg| {
             let ns: Vec<String> = seg.iter().map(|n| n.to_string()).collect();
@@ -57,11 +65,12 @@ pub(crate) fn analysis_to_json(a: &GameAnalysis) -> String {
         )
     }).collect();
     format!(
-        "{{\"available\":true,\"coverage\":{{\"firstIssue\":\"{}\",\"firstDate\":\"{}\",\"lastIssue\":\"{}\",\"lastDate\":\"{}\",\"count\":{},\"latest\":[{}]}},\"uniformity\":[{}],\"gambler\":[{}],\"runs\":[{}],\"predN\":{},\"pred\":[{}],\"picks\":[{}]}}",
+        "{{\"available\":true,\"coverage\":{{\"firstIssue\":\"{}\",\"firstDate\":\"{}\",\"lastIssue\":\"{}\",\"lastDate\":\"{}\",\"count\":{},\"latest\":[{}]}},\"uniformity\":[{}],\"gambler\":[{}],\"runs\":[{}],\"predN\":{},\"pred\":[{}],\"picks\":[{}],\"crowd\":{{\"birthday\":[{}],\"consec\":[{}],\"sums\":[{}]}}}}",
         jesc(&a.coverage.first_issue), jesc(&a.coverage.first_date),
         jesc(&a.coverage.last_issue), jesc(&a.coverage.last_date),
         a.coverage.count, latest.join(","),
-        uni.join(","), gam.join(","), run.join(","), a.pred_n, pred.join(","), picks.join(","))
+        uni.join(","), gam.join(","), run.join(","), a.pred_n, pred.join(","), picks.join(","),
+        bday.join(","), cons.join(","), sms.join(","))
 }
 
 pub(crate) struct Request {
@@ -166,16 +175,24 @@ details{margin:6px 0}summary{cursor:pointer;color:var(--accent)}
 <label class=lab>彩种 <select id="game"></select></label>
 <span id="status" class=muted></span></header>
 <main>
-<div class=card><h2>数据同步(粘贴接口 JSON)</h2>
-<p class=muted>在浏览器打开接口(下方链接),复制返回的 JSON 粘贴到这里,点"同步"即可。仅福彩 ssq/3d/kl8/qlc 支持。</p>
+<div class=card><h2>数据同步</h2>
+<p class=muted>点一下即可从中国福彩网拉取最新开奖数据并保存到本地 <code>data/</code>,重启后仍保留。仅福彩 ssq/3d/kl8/qlc 支持直连。</p>
+<div><button id="fetch">同步最新数据</button> <span id="fetchmsg" class=muted></span></div>
+<details><summary>手动导入(备用:直连被限流或断网时)</summary>
+<p class=muted>在浏览器打开接口(下方链接),复制返回的 JSON 粘贴到框里,点"粘贴导入"。</p>
 <p id="apilink" class=muted></p>
 <textarea id="json" placeholder="把接口返回的 JSON 粘贴到这里…"></textarea>
-<div><button id="sync">同步</button> <span id="syncmsg" class=muted></span></div></div>
+<div><button id="sync">粘贴导入</button> <span id="syncmsg" class=muted></span></div>
+</details></div>
 
 <div class=card id="picks"><h2>策略选号(仅演示)</h2>
 <p class=warn>⚠ 这三注号码的中奖概率与任意其他号码完全相同(头奖概率极低,由组合数唯一决定,与选号方式无关)。本演示只为展示"策略"长什么样,并不能提高中奖机会。</p>
 <div id="picksbody" class=muted>加载中…</div>
 <p class=muted>下方「预测打脸实验」显示冷/热/随机三策略历史平均命中数都≈理论值——它们并不比机选更优。</p></div>
+
+<div class=card id="crowd"><h2>号码热门度:避开"生日号"</h2>
+<p class=warn>⚠ 避开某些号<b>不会改变</b>你的中奖概率。下面的"分奖"效应基于一个<b>教学假设</b>(玩家超买 ≤31 的"生日号" w=2 倍,真实倍数未知),且<b>仅对多人分享的头奖彩池成立</b>——对固定奖金玩法无效,更不改变负期望。</p>
+<div id="crowdbody" class=muted>加载中…</div></div>
 
 <div class=card id="analysis"><h2>分析结果</h2><div id="body" class=muted>加载中…</div></div>
 
@@ -184,6 +201,7 @@ details{margin:6px 0}summary{cursor:pointer;color:var(--accent)}
 <details><summary>卡方均匀性检验</summary><p class=muted>统计每个号码/每位数字的历史出现频次,用卡方检验判断是否偏离"均匀分布"。p&gt;0.05 表示无法拒绝均匀假设——号码确实均匀随机,没有可利用的"冷热规律"。真实期数少时统计功效低,已在结果中注明。</p></details>
 <details><summary>赌徒谬误检验</summary><p class=muted>验证"某号上期没出,下期更容易出"是否成立。对比"上期没出→本期出"的条件概率与无条件概率,两者≈相等,证明历史遗漏对下期毫无影响——"冷号该回补"是幻觉。</p></details>
 <details><summary>游程检验(独立性)</summary><p class=muted>把某号"逐期是否出现"编码成 0/1 序列,用 Wald–Wolfowitz 游程检验其是否独立。p&gt;0.05 表示序列无自相关——前后期之间没有可预测的规律。</p></details>
+<details><summary>号码热门度:避开"生日号"</summary><p class=muted>很多人爱选 ≤31 的"生日号",这些号被玩家超买。开奖本身完全公平(实际 ≤31 占比≈均匀基线),避开生日号<b>不改变中奖概率</b>;但若真中了多人分享的头奖,用 &gt;31 的冷门号能让平分你奖金的人更少。页面里的 w=2 是<b>教学假设、非实测</b>,真实超买倍数未知,且对固定奖金玩法无效。连号与和值仅作纯描述,不挂钩任何金额。</p></details>
 <details><summary>预测"打脸"实验:冷/热/随机三策略</summary><p class=muted>用历史走势预测下一期,三种策略同台:冷号策略(选最少出现的)、热号策略(选最多出现的)、随机基线。统计平均命中数,三者都会贴着纯运气的理论期望,彼此无显著差异——实证任何选号策略都不优于瞎蒙。需 &gt;30 期数据才会运行。</p></details>
 </div>
 </main>
@@ -192,9 +210,11 @@ const $=s=>document.querySelector(s);
 const API_BASE="https://www.cwl.gov.cn/cwl_admin/front/cwlkj/search/kjxx/findDrawNotice";
 let games=[];
 async function loadGames(){
+  const prev=$("#game").value;
   const r=await fetch("/api/games");const d=await r.json();games=d.games;
   const sel=$("#game");sel.innerHTML="";
   games.forEach(g=>{const o=document.createElement("option");o.value=g.key;o.textContent=g.name+(g.hasData?"":"(无数据)");sel.appendChild(o);});
+  if(prev&&games.some(g=>g.key===prev))sel.value=prev;
   onChange();
 }
 function apiUrlFor(g){return g&&g.fetchable?`${API_BASE}?name=${g.key==="d3"?"3d":g.key}&issueCount=100`:null;}
@@ -203,12 +223,15 @@ function onChange(){
   const url=apiUrlFor(g);
   $("#apilink").innerHTML=url?`接口链接:<a href="${url}" target="_blank">${url}</a>`:"该彩种(体彩)暂不支持导入。";
   $("#sync").disabled=!url;
+  $("#fetch").disabled=!url;
+  $("#fetch").textContent=url?"同步最新数据":"该彩种暂不支持直连";
+  $("#fetchmsg").textContent="";
   loadAnalysis(key);
 }
 async function loadAnalysis(key){
   $("#body").textContent="加载中…";
   const r=await fetch("/api/analysis?game="+encodeURIComponent(key));const a=await r.json();
-  if(!a.available){$("#body").innerHTML=`<span class=warn>${a.reason||"无数据"}</span>`;$("#picksbody").innerHTML="<span class=muted>(无数据,无法演示选号)</span>";$("#status").textContent="";return;}
+  if(!a.available){$("#body").innerHTML=`<span class=warn>${a.reason||"无数据"}</span>`;$("#picksbody").innerHTML="<span class=muted>(无数据,无法演示选号)</span>";$("#crowdbody").innerHTML="<span class=muted>(无数据)</span>";$("#status").textContent="";return;}
   $("#status").textContent=`${a.coverage.count} 期 ${a.coverage.firstIssue}→${a.coverage.lastIssue}`;
   let ph="";
   (a.picks||[]).forEach(p=>{
@@ -216,6 +239,18 @@ async function loadAnalysis(key){
     ph+=`<div class=row><b>${p.strategy}</b> <code>${t}</code><div class=muted>为什么:${p.why}</div></div>`;
   });
   $("#picksbody").innerHTML=ph;
+  const cw=a.crowd||{birthday:[],consec:[],sums:[]};
+  let ch="";
+  if(!(cw.birthday.length||cw.consec.length)){ch="<span class=muted>该玩法无池型选号结构,不适用。</span>";}
+  else{
+    cw.birthday.forEach(b=>{
+      ch+=`<div class=row><b>${b.label}</b> 开出号≤31占比 <b>${b.actualLe31.toFixed(3)}</b> <span class=muted>(均匀基线 ${b.baseLe31.toFixed(3)})</span> · 纯生日期 <b>${b.actualAll.toFixed(3)}</b> <span class=muted>(基线 ${b.baseAll.toFixed(3)})</span>`;
+      ch+=`<div class=muted>开奖对生日号无偏爱(实际≈基线)。假设玩家超买≤31号 w=${b.w.toFixed(0)} 倍,用满 ${b.above31} 个 >31 的号,理论上与你分头奖的人 ÷<b>${b.shareRatio.toFixed(0)}</b>——<span class=ok>中奖概率不变</span>。</div></div>`;
+    });
+    cw.consec.forEach(r=>{ch+=`<div class=row><span class=lab>${r.label} 含连号</span> ${r.actual.toFixed(3)} <span class=muted>(随机基线 ${r.base.toFixed(3)}) 纯描述</span></div>`;});
+    cw.sums.forEach(r=>{ch+=`<div class=row><span class=lab>${r.label} 和值下半区</span> ${r.actualLow.toFixed(3)} <span class=muted>(均值 ${r.meanSum.toFixed(1)} 中点 ${r.midSum.toFixed(1)}) 纯描述</span></div>`;});
+  }
+  $("#crowdbody").innerHTML=ch;
   let h="";
   h+="<div class=row><b>卡方均匀性</b></div>";
   a.uniformity.forEach(u=>{h+=`<div class=row><span class=lab>${u.label}</span> χ²=${u.chi2.toFixed(2)} p=${u.p.toFixed(4)} <span class="${u.uniform?'ok':'warn'}">${u.uniform?'均匀':'本样本偏离'}</span>`+(u.cold!==undefined?` <span class=muted>冷${u.cold}(${u.coldN}) 热${u.hot}(${u.hotN})</span>`:"")+"</div>";});
@@ -229,6 +264,16 @@ async function loadAnalysis(key){
     h+=`<div class=row class=muted>三策略都贴着理论期望 → 没有策略优于随机。</div>`;}
   $("#body").innerHTML=h;
 }
+async function doFetch(){
+  const key=$("#game").value;
+  $("#fetch").disabled=true;$("#fetchmsg").textContent="同步中…(首次可能需数秒)";
+  try{
+    const r=await fetch("/api/fetch?game="+encodeURIComponent(key),{method:"POST"});
+    const d=await r.json();
+    $("#fetchmsg").innerHTML=d.ok?`<span class=ok>${d.message}</span>`:`<span class=warn>${d.message}</span>`;
+    if(d.ok){loadGames();}else{$("#fetch").disabled=false;}
+  }catch(e){$("#fetchmsg").innerHTML=`<span class=warn>请求失败:${e}</span>`;$("#fetch").disabled=false;}
+}
 async function doSync(){
   const key=$("#game").value;const body=$("#json").value.trim();
   if(!body){$("#syncmsg").textContent="请先粘贴 JSON";return;}
@@ -239,6 +284,7 @@ async function doSync(){
   if(d.ok){$("#json").value="";loadGames();}
 }
 $("#game").addEventListener("change",onChange);
+$("#fetch").addEventListener("click",doFetch);
 $("#sync").addEventListener("click",doSync);
 loadGames();
 </script>
@@ -250,7 +296,8 @@ pub(crate) fn handle(method: &str, path: &str, query: &str, body: &str) -> Respo
         ("GET", "/api/games") => Response::json(200, games_json()),
         ("GET", "/api/analysis") => analysis_response(&query_get(query, "game").unwrap_or_default()),
         ("POST", "/api/import") => import_response(&query_get(query, "game").unwrap_or_default(), body),
-        (_, "/api/games") | (_, "/api/analysis") | (_, "/api/import") | (_, "/") =>
+        ("POST", "/api/fetch") => fetch_response(&query_get(query, "game").unwrap_or_default()),
+        (_, "/api/games") | (_, "/api/analysis") | (_, "/api/import") | (_, "/api/fetch") | (_, "/") =>
             Response::json(405, "{\"error\":\"method not allowed\"}".to_string()),
         _ => Response::json(404, "{\"error\":\"not found\"}".to_string()),
     }
@@ -296,6 +343,21 @@ fn import_response(game: &str, body: &str) -> Response {
         return Response::json(400, "{\"ok\":false,\"message\":\"数据过大\"}".to_string());
     }
     match crate::fetch::process_and_write(&spec, body) {
+        Ok(msg) => Response::json(200, format!("{{\"ok\":true,\"message\":\"{}\"}}", jesc(&msg))),
+        Err(e) => Response::json(200, format!("{{\"ok\":false,\"message\":\"{}\"}}", jesc(&e))),
+    }
+}
+
+// 服务器端直连同步:复用 CLI 的抓取链(build_url → curl → 写入 data/<game>.csv)。
+fn fetch_response(game: &str) -> Response {
+    let spec = match crate::game_spec::real_data_games().into_iter().find(|g| g.key == game) {
+        Some(s) => s,
+        None => return Response::json(400, "{\"ok\":false,\"message\":\"未知彩种\"}".to_string()),
+    };
+    if spec.fetch.is_none() {
+        return Response::json(400, "{\"ok\":false,\"message\":\"该彩种(体彩)暂不支持直连同步,请用手动导入\"}".to_string());
+    }
+    match crate::fetch::do_fetch(&[game.to_string()]) {
         Ok(msg) => Response::json(200, format!("{{\"ok\":true,\"message\":\"{}\"}}", jesc(&msg))),
         Err(e) => Response::json(200, format!("{{\"ok\":false,\"message\":\"{}\"}}", jesc(&e))),
     }
@@ -397,6 +459,9 @@ mod tests {
         assert!(j.contains("\"runs\":["));
         assert!(j.contains("\"pred\":["));
         assert!(j.contains("\"coverage\":"));
+        assert!(j.contains("\"crowd\":{"));
+        assert!(j.contains("\"birthday\":["));
+        assert!(j.contains("\"shareRatio\":"));
     }
 
     #[test]
@@ -491,6 +556,44 @@ mod tests {
         assert!(r.body.contains("策略选号(仅演示)"));
         assert!(r.body.contains("中奖概率与任意其他号码"));
         assert!(r.body.contains("id=\"picksbody\""));
+    }
+
+    #[test]
+    fn route_fetch_unsupported_game_400() {
+        // dlt 无 fetch 源 => 400,在触网前返回,不写文件
+        let r = handle("POST", "/api/fetch", "game=dlt", "");
+        assert_eq!(r.status, 400);
+        assert!(r.body.contains("\"ok\":false"));
+    }
+
+    #[test]
+    fn route_fetch_unknown_game_400() {
+        let r = handle("POST", "/api/fetch", "game=zzz", "");
+        assert_eq!(r.status, 400);
+        assert!(r.body.contains("\"ok\":false"));
+    }
+
+    #[test]
+    fn route_fetch_get_405() {
+        assert_eq!(handle("GET", "/api/fetch", "game=ssq", "").status, 405);
+    }
+
+    #[test]
+    fn index_page_has_fetch_button() {
+        let r = handle("GET", "/", "", "");
+        assert_eq!(r.status, 200);
+        assert!(r.body.contains("同步最新数据"));
+        assert!(r.body.contains("id=\"fetch\""));
+        assert!(r.body.contains("手动导入")); // 备用通道仍在
+    }
+
+    #[test]
+    fn index_page_has_crowd_section() {
+        let r = handle("GET", "/", "", "");
+        assert_eq!(r.status, 200);
+        assert!(r.body.contains("避开\"生日号\""));
+        assert!(r.body.contains("id=\"crowdbody\""));
+        assert!(r.body.contains("教学假设"));
     }
 
     #[test]

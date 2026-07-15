@@ -139,6 +139,156 @@ pub(crate) struct GameAnalysis {
     pub pred_n: usize,
     pub pred: Vec<CompPred>,
     pub picks: Vec<StrategyPick>,
+    pub crowd: CrowdAnalysis,
+}
+
+// ---- 号码热门度分析:避开"生日号"(仅 Pool 组件) ----
+
+// 生日号(≤31)超买假设倍数。教学常数,非实测:玩家真实超买倍数未知。
+pub(crate) const BIRTHDAY_W: f64 = 2.0;
+
+// C(n,k),用 f64 连乘避免整型溢出;k>n 返回 0。
+pub(crate) fn comb(n: u32, k: u32) -> f64 {
+    if k > n {
+        return 0.0;
+    }
+    let k = k.min(n - k);
+    let mut r = 1.0f64;
+    for i in 0..k {
+        r = r * (n - i) as f64 / (i + 1) as f64;
+    }
+    r
+}
+
+pub(crate) struct BirthdayRow {
+    pub label: String,
+    pub above31: u32,          // 池中 >31 的号码个数(可换入的"冷门"号)
+    pub actual_le31: f64,      // 实际开出号码中 ≤31 的占比
+    pub base_le31: f64,        // 均匀基线
+    pub actual_all: f64,       // "纯生日期"(选号全 ≤31)实际占比
+    pub base_all: f64,         // 基线
+    pub w: f64,                // 假设超买倍数
+    pub share_ratio: f64,      // 全部换入 >31 号后,共享者期望缩小的倍数 = w^above31
+}
+pub(crate) struct ConsecRow {
+    pub label: String,
+    pub actual: f64,           // 含连号期数占比
+    pub base: f64,             // 随机基线
+}
+pub(crate) struct SumRow {
+    pub label: String,
+    pub actual_low: f64,       // 和值落在下半区的占比
+    pub mean_sum: f64,
+    pub mid_sum: f64,
+}
+pub(crate) struct CrowdAnalysis {
+    pub birthday: Vec<BirthdayRow>,
+    pub consec: Vec<ConsecRow>,
+    pub sums: Vec<SumRow>,
+}
+
+// 事实层全部来自开奖数据;分奖倍率是显式标注的教学假设。仅 Pool 组件产生行。
+pub(crate) fn compute_crowding(spec: &GameSpec, draws: &[DrawRecord]) -> CrowdAnalysis {
+    let n = draws.len().max(1) as f64;
+    let mut birthday = Vec::new();
+    let mut consec = Vec::new();
+    let mut sums = Vec::new();
+    for (ci, comp) in spec.components.iter().enumerate() {
+        if let Component::Pool { label, size, pick } = comp {
+            let (size, pick) = (*size, *pick);
+            let tag = format!("{} {}/{}", label, pick, size);
+            let m = size.min(31); // ≤31 的号码个数
+            let above31 = size.saturating_sub(31);
+
+            // --- 生日号:仅当池中存在 >31 的号才有"避开"余地 ---
+            if above31 > 0 {
+                let mut le31_total = 0u64; // 所有开出号里 ≤31 的个数
+                let mut all_le31 = 0u64;   // 纯生日期数
+                for d in draws {
+                    let seg = &d.components[ci];
+                    let cnt = seg.iter().filter(|&&b| b <= 31).count();
+                    le31_total += cnt as u64;
+                    if cnt == seg.len() {
+                        all_le31 += 1;
+                    }
+                }
+                birthday.push(BirthdayRow {
+                    label: tag.clone(),
+                    above31,
+                    actual_le31: le31_total as f64 / (n * pick as f64),
+                    base_le31: m as f64 / size as f64,
+                    actual_all: all_le31 as f64 / n,
+                    base_all: comb(m, pick) / comb(size, pick),
+                    w: BIRTHDAY_W,
+                    share_ratio: BIRTHDAY_W.powi(above31 as i32),
+                });
+            }
+
+            // --- 连号(纯描述):seg 解析时已升序 ---
+            let mut has_consec = 0u64;
+            for d in draws {
+                let seg = &d.components[ci];
+                if seg.windows(2).any(|w| w[1] == w[0] + 1) {
+                    has_consec += 1;
+                }
+            }
+            consec.push(ConsecRow {
+                label: tag.clone(),
+                actual: has_consec as f64 / n,
+                base: 1.0 - comb(size - pick + 1, pick) / comb(size, pick),
+            });
+
+            // --- 和值(纯描述):对称分布,期望和 = pick*(size+1)/2 ---
+            let mid_sum = pick as f64 * (size + 1) as f64 / 2.0;
+            let mut low = 0u64;
+            let mut sum_total = 0u64;
+            for d in draws {
+                let s: u32 = d.components[ci].iter().sum();
+                sum_total += s as u64;
+                if (s as f64) < mid_sum {
+                    low += 1;
+                }
+            }
+            sums.push(SumRow {
+                label: tag,
+                actual_low: low as f64 / n,
+                mean_sum: sum_total as f64 / n,
+                mid_sum,
+            });
+        }
+    }
+    CrowdAnalysis { birthday, consec, sums }
+}
+
+pub(crate) fn format_crowding(c: &CrowdAnalysis) -> String {
+    let mut s = String::from("\n-- [真实] 号码热门度:避开'生日号'--\n");
+    if c.birthday.is_empty() && c.consec.is_empty() {
+        s.push_str("该玩法无池型选号结构,不适用。\n");
+        return s;
+    }
+    for b in &c.birthday {
+        s.push_str(&format!(
+            "[{}] 开出号 ≤31 占比 {:.3}(均匀基线 {:.3});纯生日期(全≤31)占比 {:.3}(基线 {:.3})。\n",
+            b.label, b.actual_le31, b.base_le31, b.actual_all, b.base_all
+        ));
+        s.push_str(&format!(
+            "  开奖对生日号无偏爱(实际≈基线)。假设玩家超买 ≤31 号 w={:.0} 倍[教学假设,非实测],用满 {} 个 >31 的号,理论上与你分头奖的人 ÷{:.0}——中奖概率不变,且仅限多人分享型奖池。\n",
+            b.w, b.above31, b.share_ratio
+        ));
+    }
+    for r in &c.consec {
+        s.push_str(&format!(
+            "[{}] 含连号期数占比 {:.3}(随机基线 {:.3})——纯描述。\n",
+            r.label, r.actual, r.base
+        ));
+    }
+    for r in &c.sums {
+        s.push_str(&format!(
+            "[{}] 和值下半区占比 {:.3}(均值 {:.1},中点 {:.1})——纯描述。\n",
+            r.label, r.actual_low, r.mean_sum, r.mid_sum
+        ));
+    }
+    s
 }
 
 pub(crate) fn compute_uniformity(spec: &GameSpec, draws: &[DrawRecord]) -> Vec<UniformRow> {
@@ -332,6 +482,7 @@ pub(crate) fn analyze_game(spec: &GameSpec, draws: &[DrawRecord], rng: &mut crat
         gambler: compute_gamblers(spec, draws),
         runs: compute_runs(spec, draws),
         pred_n, pred, picks,
+        crowd: compute_crowding(spec, draws),
     }
 }
 
@@ -525,6 +676,7 @@ pub(crate) fn run_game_report(spec: &GameSpec, draws: &[DrawRecord], rng: &mut c
     print!("{}", format_uniformity(&a.uniformity));
     print!("{}", format_gamblers(&a.gambler));
     print!("{}", format_runs(&a.runs));
+    print!("{}", format_crowding(&a.crowd));
     print_prediction(a.pred_n, &a.pred);
 }
 
@@ -731,5 +883,55 @@ mod tests {
         let cov = compute_coverage(&draws);
         assert_eq!(cov.count, 3);
         assert_eq!(cov.latest.len(), 2); // 两个组件
+    }
+
+    #[test]
+    fn comb_known_values() {
+        assert_eq!(comb(5, 2), 10.0);
+        assert_eq!(comb(4, 4), 1.0);
+        assert_eq!(comb(4, 0), 1.0);
+        assert_eq!(comb(4, 5), 0.0); // k>n
+        assert!((comb(33, 6) - 1_107_568.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn crowding_shape_ssq() {
+        // 红球 size33>31 有生日行;蓝球 size16 全≤31 无生日行。连号/和值两组件各一行。
+        let ssq = real_data_games().into_iter().find(|g| g.key == "ssq").unwrap();
+        let draws = vec![rec(vec![vec![1, 2, 3, 4, 5, 6], vec![9]]),
+                         rec(vec![vec![2, 5, 11, 19, 26, 33], vec![3]])];
+        let c = compute_crowding(&ssq, &draws);
+        assert_eq!(c.birthday.len(), 1); // 仅红球
+        assert_eq!(c.consec.len(), 2);   // 红+蓝
+        assert_eq!(c.sums.len(), 2);
+        assert_eq!(c.birthday[0].above31, 2); // 32、33
+        assert!((c.birthday[0].share_ratio - 4.0).abs() < 1e-9); // w^2 = 2^2
+    }
+
+    #[test]
+    fn crowding_all_birthday_rigged() {
+        // 每期红球全 ≤31 且连号 => 纯生日期占比=1,含连号占比=1,均高于随机基线。
+        let ssq = real_data_games().into_iter().find(|g| g.key == "ssq").unwrap();
+        let draws: Vec<DrawRecord> =
+            (0..5).map(|_| rec(vec![vec![1, 2, 3, 4, 5, 6], vec![9]])).collect();
+        let c = compute_crowding(&ssq, &draws);
+        let b = &c.birthday[0];
+        assert!((b.actual_all - 1.0).abs() < 1e-9);
+        assert!((b.actual_le31 - 1.0).abs() < 1e-9);
+        assert!((b.base_le31 - 31.0 / 33.0).abs() < 1e-9);
+        assert!(b.base_all < 1.0 && b.base_all > 0.0);
+        // 红球组件 = consec[0](与 sums[0] 同序)
+        assert!((c.consec[0].actual - 1.0).abs() < 1e-9);
+        assert!(c.consec[0].base < 1.0);
+    }
+
+    #[test]
+    fn crowding_digit_game_empty() {
+        // 3D 纯数字型 => 无池型结构,三段全空。
+        let d3 = real_data_games().into_iter().find(|g| g.key == "d3").unwrap();
+        let draws = vec![rec(vec![vec![7, 7, 2]])];
+        let c = compute_crowding(&d3, &draws);
+        assert!(c.birthday.is_empty() && c.consec.is_empty() && c.sums.is_empty());
+        assert!(format_crowding(&c).contains("不适用"));
     }
 }
